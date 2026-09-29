@@ -711,40 +711,63 @@ build_plugin_param() {
 
 # 设置端口
 set_port() {
-    local old_port="${SS_PORT}"
+    local old_port="${SS_PORT}" port_choice
     SS_PORT=$(generate_random_port)
     echo -e "${INFO} 已生成随机端口：${SS_PORT}"
     echo -e "${Tip} 是否使用该随机端口？"
     echo "=================================="
-    echo -e " ${Green_font_prefix}1.${Font_color_suffix} 是"
+    echo -e " ${Green_font_prefix}1.${Font_color_suffix} 是，使用随机端口"
     echo -e " ${Green_font_prefix}2.${Font_color_suffix} 否，我要自定义端口"
     echo "=================================="
-    
-    read -e -p "(默认: 1. 使用随机端口)：" port_choice
-    [[ -z "${port_choice}" ]] && port_choice="1"
-    
-    if [[ ${port_choice} == "2" ]]; then
-        while true; do
-            echo -e "请输入 Shadowsocks Rust 端口 [1-65535]"
-            read -e -p "(默认：2525)：" SS_PORT
-            [[ -z "${SS_PORT}" ]] && SS_PORT="2525"
-            
-            if ! [[ ${SS_PORT} =~ ^[0-9]+$ ]]; then
-                echo -e "${Error} 输入错误，请输入数字"
-                continue
-            fi
-            if (( SS_PORT < 1 || SS_PORT > 65535 )); then
-                echo -e "${Error} 输入错误，端口范围必须在 1-65535 之间"
-                continue
-            fi
-            # 端口已被其他服务占用时 ss-rust 会启动失败，提前拦下
-            if [[ "${SS_PORT}" != "${old_port}" ]] && port_in_use "${SS_PORT}"; then
-                echo -e "${Error} 端口 ${SS_PORT} 已被其他服务占用，请换一个"
-                continue
-            fi
-            break
-        done
-    fi
+
+    while true; do
+        read -e -p "(默认: 1；也可直接输入端口号)：" port_choice
+        [[ -z "${port_choice}" ]] && port_choice="1"
+
+        case "${port_choice}" in
+            1)
+                break
+                ;;
+            2)
+                while true; do
+                    echo -e "请输入 Shadowsocks Rust 端口 [1-65535]"
+                    read -e -p "(默认：2525)：" SS_PORT
+                    [[ -z "${SS_PORT}" ]] && SS_PORT="2525"
+
+                    if ! [[ ${SS_PORT} =~ ^[0-9]+$ ]]; then
+                        echo -e "${Error} 输入错误，请输入数字"
+                        continue
+                    fi
+                    if (( SS_PORT < 1 || SS_PORT > 65535 )); then
+                        echo -e "${Error} 输入错误，端口范围必须在 1-65535 之间"
+                        continue
+                    fi
+                    if [[ "${SS_PORT}" != "${old_port}" ]] && port_in_use "${SS_PORT}"; then
+                        echo -e "${Error} 端口 ${SS_PORT} 已被其他服务占用，请换一个"
+                        continue
+                    fi
+                    break
+                done
+                break
+                ;;
+            *)
+                if ! [[ ${port_choice} =~ ^[0-9]+$ ]]; then
+                    echo -e "${Error} 请输入 1、2 或 1-65535 之间的端口号"
+                    continue
+                fi
+                if (( port_choice < 1 || port_choice > 65535 )); then
+                    echo -e "${Error} 端口范围必须在 1-65535 之间"
+                    continue
+                fi
+                if [[ "${port_choice}" != "${old_port}" ]] && port_in_use "${port_choice}"; then
+                    echo -e "${Error} 端口 ${port_choice} 已被其他服务占用，请换一个"
+                    continue
+                fi
+                SS_PORT="${port_choice}"
+                break
+                ;;
+        esac
+    done
     
     echo && echo "=================================="
     echo -e "端口：${Red_background_prefix} ${SS_PORT} ${Font_color_suffix}"
