@@ -52,6 +52,12 @@ bash ./ss-2022.sh
 
 Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的 systemd 项目，不属于此 Alpine 版本的支持范围；菜单会显示提示并返回。Alpine 官方仓库未提供 `simple-obfs`，混淆插件仅在已自行安装 `obfs-server` 时可用。
 
+若网络侧已负责过滤端口且不需要容器内 iptables 规则，安装前设置 `SS_SKIP_FIREWALL=1`。该设置会写入 `/etc/ss-rust/firewall-disabled` 并在后续 SS/ShadowTLS 管理操作中持续生效；中国大陆 IP 屏蔽是独立的防火墙功能，不受此选项控制。
+
+```sh
+SS_SKIP_FIREWALL=1 bash ./ss-2022.sh
+```
+
 ## 主要功能
 
 ### Shadowsocks Rust 功能

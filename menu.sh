@@ -251,6 +251,9 @@ manage_vless() {
 
 close_port() {
     local port=$1
+    if [ "${SS_SKIP_FIREWALL:-0}" = "1" ] || [ -f /etc/ss-rust/firewall-disabled ]; then
+        return 0
+    fi
     local ports_file="/etc/ss-rust/firewall-ports"
     if [ -f "/etc/ss-rust/firewall-chain-managed" ] && [ -f "${ports_file}" ]; then
         iptables -D SS2022_ALLOW -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true

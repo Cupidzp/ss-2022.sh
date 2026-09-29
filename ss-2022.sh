@@ -30,6 +30,7 @@ BINARY_PATH="/usr/local/bin/ss-rust"
 CONFIG_PATH="/etc/ss-rust/config.json"
 PORTS_DIR="/etc/ss-rust/ports"
 VERSION_FILE="/etc/ss-rust/ver.txt"
+FIREWALL_SKIP_FILE="/etc/ss-rust/firewall-disabled"
 MAINLAND_BLOCK_SCRIPT="/usr/local/bin/block-mainland.sh"
 MAINLAND_EXTRACT_SCRIPT="/usr/local/bin/extract-cn-ip-from-mmdb.py"
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
@@ -154,6 +155,10 @@ service_show_status() {
 service_show_logs() {
     local log_file="/var/log/$1.log"
     [[ -f "${log_file}" ]] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
+}
+
+firewall_is_disabled() {
+    [[ "${SS_SKIP_FIREWALL:-0}" == "1" || -f "${FIREWALL_SKIP_FILE}" ]]
 }
 
 install_openrc_service() {
@@ -519,6 +524,7 @@ EOF
 
 alpine_firewall_add_port() {
     local port=$1 chain="SS2022_ALLOW" marker="${INSTALL_DIR}/firewall-chain-managed"
+    firewall_is_disabled && return 0
     if ! command -v iptables >/dev/null 2>&1; then
         echo -e "${WARNING} 未检测到 iptables；请在云平台或现有防火墙中放行端口 ${port}"
         return 0
@@ -552,6 +558,10 @@ alpine_firewall_add_port() {
 check_firewall() {
     local port=$1
     echo -e "${INFO} 检查防火墙配置..."
+    if firewall_is_disabled; then
+        echo -e "${INFO} SS_SKIP_FIREWALL=1，跳过本机 iptables 规则管理"
+        return 0
+    fi
     alpine_firewall_add_port "${port}"
 }
 
@@ -559,6 +569,7 @@ check_firewall() {
 close_firewall_port() {
     local port=$1
     [[ -z "${port}" ]] && return 0
+    firewall_is_disabled && return 0
     echo -e "${INFO} 回收端口 ${port} 的防火墙放行规则..."
 
     local ports_file="${INSTALL_DIR}/firewall-ports"
@@ -1033,6 +1044,11 @@ Install() {
     
     echo -e "${Info} 检测系统信息..."
     detect_os
+    if [[ "${SS_SKIP_FIREWALL:-0}" == "1" ]]; then
+        mkdir -p "${INSTALL_DIR}"
+        : > "${FIREWALL_SKIP_FILE}"
+        echo -e "${WARNING} 已保存 SS_SKIP_FIREWALL 设置，本机 iptables 规则不会由脚本管理"
+    fi
 
     echo -e "${Info} 开始安装/配置依赖..."
     install_dependencies

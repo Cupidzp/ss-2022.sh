@@ -22,6 +22,7 @@ RESET='\033[0m'
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/init.d"
 CONFIG_DIR="/etc/shadowtls"
+FIREWALL_SKIP_FILE="/etc/ss-rust/firewall-disabled"
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
 
 require_supported_alpine() {
@@ -92,6 +93,10 @@ service_show_logs() {
     log_file=$(sed -n 's/^output_log="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
     [ -n "${log_file}" ] || log_file="/var/log/$1.log"
     [ -f "${log_file}" ] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
+}
+
+firewall_is_disabled() {
+    [ "${SS_SKIP_FIREWALL:-0}" = "1" ] || [ -f "${FIREWALL_SKIP_FILE}" ]
 }
 
 list_snell_service_files() {
@@ -483,6 +488,10 @@ alpine_firewall_remove_port() {
 open_firewall_port() {
     local port=$1
     [ -z "$port" ] && return 0
+    if firewall_is_disabled; then
+        echo -e "${YELLOW}已跳过 ShadowTLS iptables 规则；请确保入口端口 ${port} 可达${RESET}"
+        return 0
+    fi
     echo -e "${CYAN}正在放行防火墙端口 ${port} ...${RESET}"
 
     alpine_firewall_add_port "$port"
@@ -492,6 +501,7 @@ open_firewall_port() {
 close_firewall_port() {
     local port=$1
     [ -z "$port" ] && return 0
+    firewall_is_disabled && return 0
 
     alpine_firewall_remove_port "$port"
 }
