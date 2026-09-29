@@ -20,86 +20,78 @@ RESET='\033[0m'
 
 # 定义系统路径
 INSTALL_DIR="/usr/local/bin"
-if [ -f /etc/alpine-release ]; then
-    SERVICE_DIR="/etc/init.d"
-else
-    SERVICE_DIR="/etc/systemd/system"
-fi
+SERVICE_DIR="/etc/init.d"
 CONFIG_DIR="/etc/shadowtls"
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
 
-service_is_openrc() {
-    [ -f /etc/alpine-release ]
+require_supported_alpine() {
+    local os_id os_version
+    [ -f /etc/os-release ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    . /etc/os-release
+    os_id=${ID:-}
+    os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
+    [ "${os_id}" = "alpine" ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    case "${os_version}" in
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
+        *) echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1 ;;
+    esac
 }
 
 service_path() {
     local name=$1
-    if service_is_openrc; then
-        echo "${SERVICE_DIR}/${name}"
-    else
-        echo "${SERVICE_DIR}/${name}.service"
-    fi
+    echo "${SERVICE_DIR}/${name}"
 }
 
 service_read_arg() {
     local service_file=$1 arg_name=$2 line value
-    if service_is_openrc; then
-        line=$(sed -n 's/^command_args="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
-    else
-        line=$(sed -n 's/^ExecStart=//p' "${service_file}" | head -n 1)
-    fi
+    line=$(sed -n 's/^command_args="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
     value=${line#*"${arg_name}" }
     [ "${value}" = "${line}" ] && return 1
     echo "${value%% *}"
 }
 
 service_start() {
-    if service_is_openrc; then rc-service "$1" start; else systemctl start "$1"; fi
+    rc-service "$1" start
 }
 
 service_stop() {
-    if service_is_openrc; then rc-service "$1" stop; else systemctl stop "$1"; fi
+    rc-service "$1" stop
 }
 
 service_restart() {
-    if service_is_openrc; then
-        if rc-service "$1" status >/dev/null 2>&1; then rc-service "$1" restart; else rc-service "$1" start; fi
-    else
-        systemctl restart "$1"
-    fi
+    if rc-service "$1" status >/dev/null 2>&1; then rc-service "$1" restart; else rc-service "$1" start; fi
 }
 
 service_active() {
-    if service_is_openrc; then rc-service "$1" status >/dev/null 2>&1; else systemctl is-active "$1" >/dev/null 2>&1; fi
+    rc-service "$1" status >/dev/null 2>&1
 }
 
 service_enable() {
-    if service_is_openrc; then rc-update add "$1" default; else systemctl enable "$1"; fi
+    rc-update add "$1" default
 }
 
 service_disable() {
-    if service_is_openrc; then rc-update del "$1" default; else systemctl disable "$1"; fi
+    rc-update del "$1" default
 }
 
 service_reload() {
-    service_is_openrc || systemctl daemon-reload
+    :
 }
 
 service_show_status() {
-    if service_is_openrc; then rc-service "$1" status; else systemctl status "$1" --no-pager; fi
+    rc-service "$1" status
 }
 
 service_restart_hint() {
-    if service_is_openrc; then echo "rc-service $1 restart"; else echo "systemctl restart $1"; fi
+    echo "rc-service $1 restart"
 }
 
 service_show_logs() {
-    if service_is_openrc; then
-        local log_file="/var/log/$1.log"
-        [ -f "${log_file}" ] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
-    else
-        journalctl --no-pager -n 50 -u "$1"
-    fi
+    local service_file log_file
+    service_file=$(service_path "$1")
+    log_file=$(sed -n 's/^output_log="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
+    [ -n "${log_file}" ] || log_file="/var/log/$1.log"
+    [ -f "${log_file}" ] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
 }
 
 list_snell_service_files() {
@@ -158,28 +150,21 @@ check_root() {
     fi
 }
 
-# 安装必要的工具（兼容 Debian/Ubuntu 与 RHEL 系）
+# 安装 Alpine 所需工具
 install_requirements() {
-    if service_is_openrc; then
-        local missing="" cmd
-        for cmd in wget curl jq qrencode; do
-            command -v "${cmd}" >/dev/null 2>&1 || missing="${missing} ${cmd}"
-        done
-        if [ -n "${missing}" ]; then
-            echo -e "${YELLOW}Alpine 缺少命令:${missing}；包名核验完成后由 apk 安装${RESET}"
-            return 1
-        fi
-    elif command -v apt >/dev/null 2>&1; then
-        apt update
-        apt install -y wget curl jq qrencode
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y epel-release 2>/dev/null || true
-        dnf install -y wget curl jq qrencode
-    elif command -v yum >/dev/null 2>&1; then
-        yum install -y epel-release 2>/dev/null || true
-        yum install -y wget curl jq qrencode
-    else
-        echo -e "${YELLOW}未识别的包管理器，跳过依赖安装，请确保已安装 wget/curl/jq${RESET}"
+    if ! apk add --no-cache bash busybox-openrc coreutils curl grep iproute2 iptables jq openrc wget; then
+        echo -e "${RED}Alpine 依赖安装失败，请检查 apk 仓库配置和网络${RESET}"
+        return 1
+    fi
+    apk add --no-cache libqrencode-tools >/dev/null 2>&1 || echo -e "${YELLOW}未安装 libqrencode-tools，二维码功能不可用${RESET}"
+
+    local missing="" cmd
+    for cmd in wget curl jq ip rc-service rc-update; do
+        command -v "${cmd}" >/dev/null 2>&1 || missing="${missing} ${cmd}"
+    done
+    if [ -n "${missing}" ]; then
+        echo -e "${RED}Alpine 缺少命令:${missing}${RESET}"
+        return 1
     fi
     return 0
 }
@@ -494,42 +479,13 @@ alpine_firewall_remove_port() {
 }
 
 # 防火墙放行 ShadowTLS 监听端口
-# ShadowTLS 的监听端口才是客户端实际连接的入口，开了 ufw/firewalld 时不放行会直接连不上
+# ShadowTLS 的监听端口才是客户端实际连接的入口，需要时由 OpenRC 管理的 iptables 链放行。
 open_firewall_port() {
     local port=$1
     [ -z "$port" ] && return 0
     echo -e "${CYAN}正在放行防火墙端口 ${port} ...${RESET}"
 
-    if service_is_openrc; then
-        alpine_firewall_add_port "$port"
-        return 0
-    fi
-
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qw active; then
-        ufw allow ${port}/tcp >/dev/null 2>&1 || true
-        ufw allow ${port}/udp >/dev/null 2>&1 || true
-        echo -e "${GREEN}UFW 已放行端口 ${port}${RESET}"
-    fi
-
-    local firewalld_active=0
-    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewalld_active=1
-        firewall-cmd --permanent --add-port=${port}/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=${port}/udp >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-        echo -e "${GREEN}firewalld 已放行端口 ${port}${RESET}"
-    fi
-
-    if [ $firewalld_active -eq 0 ] && command -v iptables >/dev/null 2>&1; then
-        iptables -C INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1 || \
-            iptables -I INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1 || true
-        iptables -C INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1 || \
-            iptables -I INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1 || true
-        if command -v iptables-save >/dev/null 2>&1; then
-            iptables-save > /etc/iptables.rules 2>/dev/null || true
-        fi
-        echo -e "${GREEN}iptables 已放行端口 ${port}${RESET}"
-    fi
+    alpine_firewall_add_port "$port"
 }
 
 # 卸载时回收防火墙放行规则
@@ -537,35 +493,7 @@ close_firewall_port() {
     local port=$1
     [ -z "$port" ] && return 0
 
-    if service_is_openrc; then
-        alpine_firewall_remove_port "$port"
-        return 0
-    fi
-
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qw active; then
-        ufw delete allow ${port}/tcp >/dev/null 2>&1 || true
-        ufw delete allow ${port}/udp >/dev/null 2>&1 || true
-    fi
-
-    local firewalld_active=0
-    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewalld_active=1
-        firewall-cmd --permanent --remove-port=${port}/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --remove-port=${port}/udp >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-    fi
-
-    if [ $firewalld_active -eq 0 ] && command -v iptables >/dev/null 2>&1; then
-        while iptables -C INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1; do
-            iptables -D INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1 || break
-        done
-        while iptables -C INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1; do
-            iptables -D INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1 || break
-        done
-        if command -v iptables-save >/dev/null 2>&1; then
-            iptables-save > /etc/iptables.rules 2>/dev/null || true
-        fi
-    fi
+    alpine_firewall_remove_port "$port"
 }
 
 # 获取已使用的 ShadowTLS 端口
@@ -705,7 +633,11 @@ generate_ss_links() {
     echo -e "${GREEN}SS + ShadowTLS 链接：${RESET}${ss_url}"
     
     echo -e "\n${YELLOW}=== Shadowrocket二维码 ===${RESET}"
-    qrencode -t UTF8 "${ss_url}"
+    if command -v qrencode >/dev/null 2>&1; then
+        qrencode -t UTF8 "${ss_url}"
+    else
+        echo -e "${YELLOW}未安装 libqrencode-tools，无法生成二维码${RESET}"
+    fi
     
     echo -e "\n${YELLOW}=== Clash Meta 配置 ===${RESET}"
     echo -e "proxies:"
@@ -764,82 +696,23 @@ create_shadowtls_service() {
     local listen_port=$3
     local tls_domain=$4
     local password=$5
-    local service_file
     local service_name
-    local description
     local identifier
     local command_args
     local dependency=""
     
     if [ "$service_type" = "ss" ]; then
         service_name="shadowtls-ss"
-        service_file=$(service_path "${service_name}")
-        description="Shadow-TLS Server Service for Shadowsocks"
         identifier="shadow-tls-ss"
         dependency="ss-rust"
     else
         service_name="shadowtls-snell-${port}"
-        service_file=$(service_path "${service_name}")
-        description="Shadow-TLS Server Service for Snell (Port: ${port})"
         identifier="shadow-tls-snell-${port}"
     fi
 
     command_args="--v3 server --listen $(get_listen_address):${listen_port} --server 127.0.0.1:${port} --tls ${tls_domain} --password ${password}"
 
-    if service_is_openrc; then
-        install_openrc_service "${service_name}" "/usr/local/bin/shadow-tls" "${command_args}" "/var/log/shadowtls-${identifier}.log" "${dependency}"
-    else
-    
-    cat > "$service_file" << EOF
-[Unit]
-Description=${description}
-Documentation=man:sstls-server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-Environment=RUST_BACKTRACE=1
-Environment=RUST_LOG=info
-ExecStart=/usr/local/bin/shadow-tls ${command_args}
-StandardOutput=append:/var/log/shadowtls-${identifier}.log
-StandardError=append:/var/log/shadowtls-${identifier}.log
-SyslogIdentifier=${identifier}
-Restart=always
-RestartSec=3
-
-# 资源限制
-# 注意：不要设置 CPUAffinity / CPUQuota，那会把服务锁死在单核或半核上，高并发下成为瓶颈
-LimitNOFILE=65535
-Nice=0
-IOSchedulingClass=best-effort
-IOSchedulingPriority=0
-MemoryMax=512M
-LimitCORE=infinity
-LimitRSS=infinity
-LimitNPROC=65535
-LimitAS=infinity
-SystemCallFilter=@system-service
-NoNewPrivileges=yes
-ProtectSystem=full
-ProtectHome=yes
-PrivateTmp=yes
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# 系统优化参数
-Environment=RUST_THREADS=1
-Environment=MONOIO_FORCE_LEGACY_DRIVER=1
-Environment=RUST_LOG_LEVEL=info
-Environment=RUST_LOG_TARGET=journal
-Environment=RUST_LOG_FORMAT=json
-Environment=RUST_LOG_FILTER=info,shadow_tls=info
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    fi
+    install_openrc_service "${service_name}" "/usr/local/bin/shadow-tls" "${command_args}" "/var/log/shadowtls-${identifier}.log" "${dependency}"
 
     # 创建日志文件并设置权限
     touch "/var/log/shadowtls-${identifier}.log"
@@ -1087,7 +960,7 @@ install_shadowtls() {
         fi
     fi
     
-    # 重新加载 systemd 配置
+    # OpenRC reads service definitions directly; no daemon reload is required.
     service_reload
     
     # 获取服务器IP
@@ -1494,7 +1367,7 @@ add_shadowtls_config() {
         esac
     done
     
-    # 重新加载 systemd 配置
+    # OpenRC reads service definitions directly; no daemon reload is required.
     service_reload
     echo -e "\n${GREEN}新增配置完成${RESET}"
 }
@@ -1603,6 +1476,7 @@ main_menu() {
 
 # 检查root权限
 check_root
+require_supported_alpine
 
 # 如果直接运行此脚本，则显示主菜单
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -22,19 +22,23 @@ RESET='\033[0m'
 current_version="4.5"
 
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
-if [ -f /etc/alpine-release ]; then
-    SERVICE_DIR="/etc/init.d"
-else
-    SERVICE_DIR="/etc/systemd/system"
-fi
-SYSTEMD_DIR="${SERVICE_DIR}"
+SERVICE_DIR="/etc/init.d"
 
-service_is_openrc() {
-    [ -f /etc/alpine-release ]
+require_supported_alpine() {
+    local os_id os_version
+    [ -f /etc/os-release ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    . /etc/os-release
+    os_id=${ID:-}
+    os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
+    [ "${os_id}" = "alpine" ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    case "${os_version}" in
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
+        *) echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1 ;;
+    esac
 }
 
 service_path() {
-    if service_is_openrc; then echo "${SERVICE_DIR}/$1"; else echo "${SERVICE_DIR}/$1.service"; fi
+    echo "${SERVICE_DIR}/$1"
 }
 
 service_name_from_path() {
@@ -44,35 +48,31 @@ service_name_from_path() {
 }
 
 service_start() {
-    if service_is_openrc; then rc-service "$1" start; else systemctl start "$1"; fi
+    rc-service "$1" start
 }
 
 service_stop() {
-    if service_is_openrc; then rc-service "$1" stop; else systemctl stop "$1"; fi
+    rc-service "$1" stop
 }
 
 service_restart() {
-    if service_is_openrc; then
-        if rc-service "$1" status >/dev/null 2>&1; then rc-service "$1" restart; else rc-service "$1" start; fi
-    else
-        systemctl restart "$1"
-    fi
+    if rc-service "$1" status >/dev/null 2>&1; then rc-service "$1" restart; else rc-service "$1" start; fi
 }
 
 service_active() {
-    if service_is_openrc; then rc-service "$1" status >/dev/null 2>&1; else systemctl is-active "$1" >/dev/null 2>&1; fi
+    rc-service "$1" status >/dev/null 2>&1
 }
 
 service_enable() {
-    if service_is_openrc; then rc-update add "$1" default; else systemctl enable "$1"; fi
+    rc-update add "$1" default
 }
 
 service_disable() {
-    if service_is_openrc; then rc-update del "$1" default; else systemctl disable "$1"; fi
+    rc-update del "$1" default
 }
 
 service_reload() {
-    service_is_openrc || systemctl daemon-reload
+    :
 }
 
 # 中国大陆屏蔽脚本仓库地址
@@ -99,67 +99,13 @@ install_global_command() {
 
 # 检查并安装依赖
 check_dependencies() {
-    local deps=()
-    service_is_openrc || deps=("bc")
-    local need_update=false
-    
     echo -e "${CYAN}正在检查依赖...${RESET}"
-    
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            echo -e "${YELLOW}未检测到 ${dep}，准备安装...${RESET}"
-            need_update=true
-            break
-        fi
-    done
-    
-    if [ "$need_update" = true ]; then
-        if service_is_openrc; then
-            echo -e "${YELLOW}Alpine 状态统计使用 OpenRC 原生状态，不需要 bc${RESET}"
-        elif [ -x "$(command -v apt)" ]; then
-            apt update
-            for dep in "${deps[@]}"; do
-                if ! command -v "$dep" &> /dev/null; then
-                    echo -e "${CYAN}正在安装 ${dep}...${RESET}"
-                    apt install -y "$dep"
-                fi
-            done
-        elif [ -x "$(command -v yum)" ]; then
-            for dep in "${deps[@]}"; do
-                if ! command -v "$dep" &> /dev/null; then
-                    echo -e "${CYAN}正在安装 ${dep}...${RESET}"
-                    yum install -y "$dep"
-                fi
-            done
-        else
-            echo -e "${RED}未支持的包管理器，请手动安装以下依赖：${deps[*]}${RESET}"
-            exit 1
-        fi
-    fi
-    
-    echo -e "${GREEN}所有依赖已满足${RESET}"
-}
+    apk add --no-cache bash busybox-openrc coreutils curl iproute2 iptables jq openrc || {
+        echo -e "${RED}Alpine 依赖安装失败，请检查 apk 仓库配置和网络${RESET}"
+        exit 1
+    }
 
-# 获取 CPU 使用率
-get_cpu_usage() {
-    local pid=$1
-    local cpu_usage=0
-    
-    # 获取 CPU 核心数
-    local cpu_cores=$(nproc)
-    
-    # 使用 top 命令获取准确的 CPU 使用率
-    if [ ! -z "$pid" ] && [ "$pid" != "0" ]; then
-        cpu_usage=$(top -b -n 2 -d 0.2 -p "$pid" | tail -1 | awk '{print $9}')
-        # 如果获取失败，使用 ps 命令作为备选
-        if [ -z "$cpu_usage" ]; then
-            cpu_usage=$(ps -p "$pid" -o %cpu= 2>/dev/null || echo 0)
-        fi
-        # 将 CPU 使用率除以核心数，得到平均使用率
-        cpu_usage=$(echo "scale=2; $cpu_usage / $cpu_cores" | bc -l)
-    fi
-    
-    echo "$cpu_usage"
+    echo -e "${GREEN}所有依赖已满足${RESET}"
 }
 
 # 检查是否以 root 权限运行
@@ -172,164 +118,40 @@ check_root() {
 
 # 检查服务状态并显示
 check_and_show_status() {
-    if service_is_openrc; then
-        echo -e "\n${CYAN}=== 服务状态检查 (OpenRC) ===${RESET}"
-        echo -e "${YELLOW}Snell / PSM / VLESS Reality 外部集成在 Alpine 暂不支持${RESET}"
-        if [ -x /usr/local/bin/ss-rust ]; then
-            if service_active ss-rust; then
-                echo -e "${GREEN}SS-2022 已安装且运行中${RESET}"
-            else
-                echo -e "${YELLOW}SS-2022 已安装但未运行${RESET}"
-            fi
-            if [ -d /etc/ss-rust/ports ]; then
-                local node_file node_port
-                for node_file in /etc/ss-rust/ports/*.json; do
-                    [ -f "${node_file}" ] || continue
-                    node_port=$(jq -r '.server_port' "${node_file}" 2>/dev/null)
-                    if service_active "ss-rust-${node_port}"; then
-                        echo -e "${GREEN}SS-2022 端口 ${node_port} 运行中${RESET}"
-                    else
-                        echo -e "${YELLOW}SS-2022 端口 ${node_port} 未运行${RESET}"
-                    fi
-                done
-            fi
+    echo -e "\n${CYAN}=== 服务状态检查 (OpenRC) ===${RESET}"
+    echo -e "${YELLOW}Snell / PSM / VLESS Reality 外部集成在 Alpine 暂不支持${RESET}"
+    if [ -x /usr/local/bin/ss-rust ]; then
+        if service_active ss-rust; then
+            echo -e "${GREEN}SS-2022 已安装且运行中${RESET}"
         else
-            echo -e "${YELLOW}SS-2022 未安装${RESET}"
+            echo -e "${YELLOW}SS-2022 已安装但未运行${RESET}"
         fi
-        local service_file service_name
-        for service_file in "${SERVICE_DIR}"/shadowtls-*; do
-            [ -f "${service_file}" ] || continue
-            case "$(basename "${service_file}")" in shadowtls-snell-*) continue ;; esac
-            service_name=$(service_name_from_path "${service_file}")
-            if service_active "${service_name}"; then
-                echo -e "${GREEN}${service_name} 运行中${RESET}"
-            else
-                echo -e "${YELLOW}${service_name} 未运行${RESET}"
-            fi
-        done
-        echo -e "${CYAN}====================${RESET}\n"
-        return 0
-    fi
-
-    # 获取 CPU 核心数
-    local cpu_cores=$(nproc)
-    
-    echo -e "\n${CYAN}=== 服务状态检查 ===${RESET}"
-    echo -e "${CYAN}系统 CPU 核心数：${cpu_cores}${RESET}"
-    
-    # 检查 Snell 状态
-    if command -v snell-server &> /dev/null; then
-        local user_count=0
-        local running_count=0
-        local total_snell_memory=0
-        local total_snell_cpu=0
-        
-        # 检查主服务状态
-        if systemctl is-active snell &> /dev/null; then
-            user_count=$((user_count + 1))
-            running_count=$((running_count + 1))
-            
-            local main_pid=$(systemctl show -p MainPID snell | cut -d'=' -f2)
-            if [ ! -z "$main_pid" ] && [ "$main_pid" != "0" ]; then
-                local mem=$(ps -o rss= -p $main_pid 2>/dev/null || echo 0)
-                local cpu=$(get_cpu_usage "$main_pid")
-                total_snell_memory=$((total_snell_memory + ${mem:-0}))
-                if [ ! -z "$cpu" ]; then
-                    total_snell_cpu=$(echo "$total_snell_cpu + ${cpu:-0}" | bc -l 2>/dev/null || echo "0")
-                fi
-            fi
-        else
-            user_count=$((user_count + 1))
-        fi
-        
-        # 检查多用户状态
-        if [ -d "/etc/snell/users" ]; then
-            for user_conf in "/etc/snell/users"/*; do
-                if [ -f "$user_conf" ] && [[ "$user_conf" != *"snell-main.conf" ]]; then
-                    local port=$(grep -E '^listen' "$user_conf" | sed -n 's/.*:\([0-9][0-9]*\)[[:space:]]*$/\1/p')
-                    if [ ! -z "$port" ]; then
-                        user_count=$((user_count + 1))
-                        if systemctl is-active --quiet "snell-${port}"; then
-                            running_count=$((running_count + 1))
-                            
-                            local user_pid=$(systemctl show -p MainPID "snell-${port}" | cut -d'=' -f2)
-                            if [ ! -z "$user_pid" ] && [ "$user_pid" != "0" ]; then
-                                local mem=$(ps -o rss= -p $user_pid 2>/dev/null || echo 0)
-                                local cpu=$(get_cpu_usage "$user_pid")
-                                total_snell_memory=$((total_snell_memory + ${mem:-0}))
-                                if [ ! -z "$cpu" ]; then
-                                    total_snell_cpu=$(echo "$total_snell_cpu + ${cpu:-0}" | bc -l 2>/dev/null || echo "0")
-                                fi
-                            fi
-                        fi
-                    fi
+        if [ -d /etc/ss-rust/ports ]; then
+            local node_file node_port
+            for node_file in /etc/ss-rust/ports/*.json; do
+                [ -f "${node_file}" ] || continue
+                node_port=$(jq -r '.server_port' "${node_file}" 2>/dev/null)
+                if service_active "ss-rust-${node_port}"; then
+                    echo -e "${GREEN}SS-2022 端口 ${node_port} 运行中${RESET}"
+                else
+                    echo -e "${YELLOW}SS-2022 端口 ${node_port} 未运行${RESET}"
                 fi
             done
         fi
-        
-        # 确保所有数值都有效
-        total_snell_memory=${total_snell_memory:-0}
-        total_snell_cpu=${total_snell_cpu:-0}
-        
-        local total_snell_memory_mb=$(echo "scale=2; $total_snell_memory/1024" | bc -l 2>/dev/null || echo "0")
-        printf "${GREEN}Snell 已安装${RESET}  ${YELLOW}CPU：%.2f%% (每核)${RESET}  ${YELLOW}内存：%.2f MB${RESET}  ${GREEN}运行中：${running_count}/${user_count}${RESET}\n" "${total_snell_cpu:-0}" "${total_snell_memory_mb:-0}"
-    else
-        echo -e "${YELLOW}Snell 未安装${RESET}"
-    fi
-    
-    # 检查 SS-2022 状态
-    if [[ -e "/usr/local/bin/ss-rust" ]]; then
-        local ss_memory=0
-        local ss_cpu=0
-        local ss_running=0
-        
-        if systemctl is-active ss-rust &> /dev/null; then
-            ss_running=1
-            local ss_pid=$(systemctl show -p MainPID ss-rust | cut -d'=' -f2)
-            if [ ! -z "$ss_pid" ] && [ "$ss_pid" != "0" ]; then
-                ss_memory=$(ps -o rss= -p $ss_pid 2>/dev/null || echo 0)
-                ss_cpu=$(get_cpu_usage "$ss_pid")
-            fi
-        fi
-        
-        local ss_memory_mb=$(echo "scale=2; $ss_memory/1024" | bc)
-        printf "${GREEN}SS-2022 已安装${RESET}  ${YELLOW}CPU：%.2f%% (每核)${RESET}  ${YELLOW}内存：%.2f MB${RESET}  ${GREEN}运行中：${ss_running}/1${RESET}\n" "$ss_cpu" "$ss_memory_mb"
     else
         echo -e "${YELLOW}SS-2022 未安装${RESET}"
     fi
-    
-    # 检查 ShadowTLS 状态
-    if systemctl list-units --type=service | grep -q "shadowtls-"; then
-        local stls_total=0
-        local stls_running=0
-        local total_stls_memory=0
-        local total_stls_cpu=0
-        
-        while IFS= read -r service; do
-            stls_total=$((stls_total + 1))
-            if systemctl is-active "$service" &> /dev/null; then
-                stls_running=$((stls_running + 1))
-                
-                local stls_pid=$(systemctl show -p MainPID "$service" | cut -d'=' -f2)
-                if [ ! -z "$stls_pid" ] && [ "$stls_pid" != "0" ]; then
-                    local mem=$(ps -o rss= -p $stls_pid 2>/dev/null || echo 0)
-                    local cpu=$(get_cpu_usage "$stls_pid")
-                    total_stls_memory=$((total_stls_memory + mem))
-                    total_stls_cpu=$(echo "$total_stls_cpu + $cpu" | bc -l)
-                fi
-            fi
-        done < <(systemctl list-units --type=service --all --no-legend | grep "shadowtls-" | awk '{print $1}')
-        
-        if [ $stls_total -gt 0 ]; then
-            local total_stls_memory_mb=$(echo "scale=2; $total_stls_memory/1024" | bc)
-            printf "${GREEN}ShadowTLS 已安装${RESET}  ${YELLOW}CPU：%.2f%% (每核)${RESET}  ${YELLOW}内存：%.2f MB${RESET}  ${GREEN}运行中：${stls_running}/${stls_total}${RESET}\n" "$total_stls_cpu" "$total_stls_memory_mb"
+    local service_file service_name
+    for service_file in "${SERVICE_DIR}"/shadowtls-*; do
+        [ -f "${service_file}" ] || continue
+        case "$(basename "${service_file}")" in shadowtls-snell-*) continue ;; esac
+        service_name=$(service_name_from_path "${service_file}")
+        if service_active "${service_name}"; then
+            echo -e "${GREEN}${service_name} 运行中${RESET}"
         else
-            echo -e "${YELLOW}ShadowTLS 未安装${RESET}"
+            echo -e "${YELLOW}${service_name} 未运行${RESET}"
         fi
-    else
-        echo -e "${YELLOW}ShadowTLS 未安装${RESET}"
-    fi
-    
+    done
     echo -e "${CYAN}====================${RESET}\n"
 }
 
@@ -389,11 +211,7 @@ update_script() {
 
 # 安装/管理 Snell
 manage_snell() {
-    if service_is_openrc; then
-        echo -e "${YELLOW}Snell 安装/管理依赖仓库外的 systemd 脚本，Alpine 暂不支持。${RESET}"
-        return 0
-    fi
-    bash <(curl -sL https://raw.githubusercontent.com/jinqians/snell.sh/main/snell.sh)
+    echo -e "${YELLOW}Snell 安装/管理依赖仓库外的 systemd 脚本，Alpine 暂不支持。${RESET}"
 }
 
 # 安装/管理 SS-2022
@@ -428,170 +246,29 @@ manage_shadowtls() {
 
 # 安装/管理 VLESS Reality（已整合到 PSM）
 manage_vless() {
-    if service_is_openrc; then
-        echo -e "${YELLOW}VLESS Reality/PSM 来自仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
-        return 0
-    fi
-    echo -e "${CYAN}VLESS Reality 的安装管理已由 PSM（Proxy Stack Manager）提供，正在启动 PSM...${RESET}"
-    if ! bash <(curl -fsSL https://psm.jinqians.com); then
-        echo -e "${RED}PSM 启动失败，请检查网络后重试，或手动执行：bash <(curl -fsSL https://psm.jinqians.com)${RESET}"
-        return 1
-    fi
-}
-save_nftables_rules() {
-    service_is_openrc && return
-    if ! command -v nft >/dev/null 2>&1; then
-        return
-    fi
-
-    if [ -f "/etc/nftables.conf" ]; then
-        nft list ruleset > /etc/nftables.conf 2>/dev/null || true
-        systemctl enable nftables >/dev/null 2>&1 || true
-    elif [ -f "/etc/sysconfig/nftables.conf" ]; then
-        nft list ruleset > /etc/sysconfig/nftables.conf 2>/dev/null || true
-        systemctl enable nftables >/dev/null 2>&1 || true
-    fi
-}
-
-close_nftables_port() {
-    local port=$1
-
-    service_is_openrc && return
-
-    if ! command -v nft >/dev/null 2>&1; then
-        return
-    fi
-
-    nft -a list ruleset 2>/dev/null | awk -v port="$port" '
-        $1 == "table" {
-            family=$2
-            table=$3
-            gsub(/[{}]/, "", table)
-        }
-        $1 == "chain" {
-            chain=$2
-            gsub(/[{}]/, "", chain)
-        }
-        ($0 ~ "tcp dport " port " .*accept" || $0 ~ "udp dport " port " .*accept") && /# handle/ {
-            handle=$NF
-            print family " " table " " chain " " handle
-        }
-    ' | while read -r family table chain handle; do
-        [ -z "$handle" ] && continue
-        nft delete rule "$family" "$table" "$chain" handle "$handle" 2>/dev/null || true
-    done
-
-    save_nftables_rules
+    echo -e "${YELLOW}VLESS Reality/PSM 来自仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
 }
 
 close_port() {
     local port=$1
-
-    if service_is_openrc; then
-        local ports_file="/etc/ss-rust/firewall-ports"
-        if [ -f "/etc/ss-rust/firewall-chain-managed" ] && [ -f "${ports_file}" ]; then
-            iptables -D SS2022_ALLOW -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
-            iptables -D SS2022_ALLOW -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
-            local tmp_file="${ports_file}.tmp"
-            grep -vxF "$port" "$ports_file" > "$tmp_file" || true
-            mv "$tmp_file" "$ports_file"
-            if [ ! -s "$ports_file" ]; then
-                rc-service ss-rust-firewall stop >/dev/null 2>&1 || true
-                rc-update del ss-rust-firewall default >/dev/null 2>&1 || true
-                rm -f "$ports_file" "/etc/ss-rust/firewall-chain-managed" /etc/init.d/ss-rust-firewall
-            fi
-        fi
-        return 0
-    fi
-
-    if command -v ufw >/dev/null 2>&1; then
-        ufw delete allow "$port"/tcp >/dev/null 2>&1 || true
-        ufw delete allow "$port"/udp >/dev/null 2>&1 || true
-    fi
-
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -D INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
-        iptables -D INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
-        if [ -d "/etc/iptables" ]; then
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    local ports_file="/etc/ss-rust/firewall-ports"
+    if [ -f "/etc/ss-rust/firewall-chain-managed" ] && [ -f "${ports_file}" ]; then
+        iptables -D SS2022_ALLOW -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
+        iptables -D SS2022_ALLOW -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
+        local tmp_file="${ports_file}.tmp"
+        grep -vxF "$port" "$ports_file" > "$tmp_file" || true
+        mv "$tmp_file" "$ports_file"
+        if [ ! -s "$ports_file" ]; then
+            rc-service ss-rust-firewall stop >/dev/null 2>&1 || true
+            rc-update del ss-rust-firewall default >/dev/null 2>&1 || true
+            rm -f "$ports_file" "/etc/ss-rust/firewall-chain-managed" /etc/init.d/ss-rust-firewall
         fi
     fi
-
-    close_nftables_port "$port"
 }
 
 # 卸载 Snell
 uninstall_snell() {
-    if service_is_openrc; then
-        echo -e "${YELLOW}Snell 卸载依赖仓库外的 systemd 配置，Alpine 暂不支持。${RESET}"
-        return 0
-    fi
-    echo -e "${CYAN}正在卸载 Snell${RESET}"
-
-    # 停止并删除依赖 Snell 后端的 ShadowTLS 服务，避免留下无后端的监听服务
-    local snell_shadowtls_services
-    snell_shadowtls_services=$(find "${SYSTEMD_DIR}" -maxdepth 1 -name "shadowtls-snell-*.service" 2>/dev/null)
-    if [ -n "$snell_shadowtls_services" ]; then
-        while IFS= read -r service_file; do
-            [ -z "$service_file" ] && continue
-            local service_name
-            service_name=$(basename "$service_file")
-            local shadowtls_port
-            shadowtls_port=$(sed -n 's/.*--listen .*:\([0-9][0-9]*\).*/\1/p' "$service_file" | head -n 1)
-            echo -e "${YELLOW}正在停止 ShadowTLS 服务 (${service_name})${RESET}"
-            systemctl stop "$service_name" 2>/dev/null
-            systemctl disable "$service_name" 2>/dev/null
-            rm -f "$service_file"
-            if [ -n "$shadowtls_port" ]; then
-                close_port "$shadowtls_port"
-            fi
-        done <<< "$snell_shadowtls_services"
-    fi
-
-    # 停止并禁用主服务
-    systemctl stop snell 2>/dev/null
-    systemctl disable snell 2>/dev/null
-    systemctl stop snell.socket 2>/dev/null
-    systemctl disable snell.socket 2>/dev/null
-    systemctl stop snell-netns 2>/dev/null
-    systemctl disable snell-netns 2>/dev/null
-
-    # 停止并禁用所有多用户服务
-    if [ -d "/etc/snell/users" ]; then
-        for user_conf in "/etc/snell/users"/*; do
-            if [ -f "$user_conf" ]; then
-                local port=$(grep -E '^listen' "$user_conf" | sed -n 's/.*:\([0-9][0-9]*\)[[:space:]]*$/\1/p')
-                if [ ! -z "$port" ]; then
-                    echo -e "${YELLOW}正在停止用户服务 (端口: $port)${RESET}"
-                    systemctl stop "snell-${port}" 2>/dev/null
-                    systemctl disable "snell-${port}" 2>/dev/null
-                    rm -f "${SYSTEMD_DIR}/snell-${port}.service"
-                    close_port "$port"
-                fi
-            fi
-        done
-    fi
-
-    # 删除服务文件
-    rm -f "/lib/systemd/system/snell.service"
-    rm -f "${SYSTEMD_DIR}/snell.service"
-    rm -f "${SYSTEMD_DIR}/snell.socket"
-    rm -f "${SYSTEMD_DIR}/snell-netns.service"
-    rm -f "/usr/local/bin/snell-netns-setup.sh"
-
-    # 删除可执行文件和配置目录
-    rm -f /usr/local/bin/snell-server
-    rm -rf /etc/snell
-    rm -f /usr/local/bin/snell  # 删除管理脚本
-
-    if ! find "${SYSTEMD_DIR}" -maxdepth 1 -name "shadowtls-*.service" 2>/dev/null | grep -q .; then
-        rm -f /usr/local/bin/shadow-tls
-    fi
-
-    # 重载 systemd 配置
-    systemctl daemon-reload
-
-    echo -e "${GREEN}Snell 及其所有多用户配置已成功卸载${RESET}"
+    echo -e "${YELLOW}Snell 安装/管理依赖仓库外的 systemd 配置，Alpine 暂不支持。${RESET}"
 }
 
 # 卸载 SS-2022
@@ -630,7 +307,7 @@ uninstall_ss_rust() {
         esac
     done
 
-    if service_is_openrc && [ -f /etc/ss-rust/firewall-ports ]; then
+    if [ -f /etc/ss-rust/firewall-ports ]; then
         while IFS= read -r extra_port; do
             case "$extra_port" in ''|*[!0-9]*) continue ;; esac
             close_port "$extra_port"
@@ -641,7 +318,7 @@ uninstall_ss_rust() {
     rm -f "/usr/local/bin/ss-rust"
     rm -rf "/etc/ss-rust"
 
-    # 重新加载 systemd
+    # OpenRC reads service definitions directly.
     service_reload
 
     echo -e "${GREEN}SS-2022 卸载完成！${RESET}"
@@ -651,8 +328,7 @@ uninstall_ss_rust() {
 uninstall_shadowtls() {
     echo -e "${CYAN}正在卸载 ShadowTLS...${RESET}"
 
-    # 直接遍历 service 文件：systemctl list-units 只列出已加载的 unit，
-    # 已停止（未加载）的 ShadowTLS 服务会被漏掉，导致卸载不干净
+    # 遍历所有服务定义也能清理已停止的 ShadowTLS 服务。
     local service_file service listen_addr listen_port
     for service_file in "${SERVICE_DIR}"/shadowtls-*; do
         [ -f "$service_file" ] || continue
@@ -671,7 +347,7 @@ uninstall_shadowtls() {
     # 删除二进制文件
     rm -f "/usr/local/bin/shadow-tls"
     
-    # 重新加载 systemd
+    # OpenRC reads service definitions directly.
     service_reload
     
     echo -e "${GREEN}ShadowTLS 卸载完成！${RESET}"
@@ -717,6 +393,7 @@ show_menu() {
 
 # 初始检查
 check_root
+require_supported_alpine
 check_dependencies
 install_global_command
 
@@ -749,20 +426,7 @@ while true; do
             update_script
             ;;
         9)
-            if service_is_openrc; then
-                echo -e "${YELLOW}PSM 流量管理依赖仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
-            else
-                echo -e "\n${YELLOW}=== 流量管理 ===${RESET}"
-                echo -e "本脚本内置的流量管理功能尚不完善，推荐使用 ${GREEN}PSM（Proxy Stack Manager）${RESET} 进行流量管理。"
-                echo -e "\nPSM 支持 Snell / SS2022 / Xray 等协议的统一流量限额管理，功能包括："
-                echo -e "  • 设置月度流量上限（GB）及自动重置日"
-                echo -e "  • 超限自动暂停节点，恢复后自动解封"
-                echo -e "  • iptables 精确计数，数据持久化保存"
-                echo -e "\n安装 PSM："
-                echo -e "  ${CYAN}bash <(curl -fsSL https://psm.jinqians.com)${RESET}"
-                echo -e "\n进入 PSM 后选择：${GREEN}15. 流量管理${RESET} 即可添加 SS2022 节点并配置限额。"
-                read -p "按任意键继续..."
-            fi
+            echo -e "${YELLOW}PSM 流量管理依赖仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
             ;;
         10)
             if ! manage_mainland_block; then

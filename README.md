@@ -30,9 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh 
 
 ## 系统要求
 
-- 支持的操作系统：Debian / Ubuntu / CentOS；Alpine Linux 3.21、3.22、3.23
+- 仅支持 Alpine Linux 3.21、3.22、3.23（x86_64、aarch64，以及脚本支持的 musl 架构）
+- 需要 OpenRC；LXC 容器应提供可用的 `rc-service` / `rc-update`
 - 需要 root 权限
-- 需要 curl、wget、jq 等基础工具
+- 首次运行前需要 Bash 和 curl
 
 ### Alpine Linux
 
@@ -47,7 +48,9 @@ bash ./ss-2022.sh
 
 服务由 OpenRC 管理，可使用 `rc-service ss-rust status|start|stop|restart` 查看和控制，使用 `rc-update` 查看开机自启。多端口 SS、ShadowTLS 和大陆屏蔽恢复也使用 OpenRC 服务。
 
-Alpine 菜单中的 Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的 systemd 项目，暂不支持；菜单会显示提示并返回。
+脚本会通过 `apk` 安装运行依赖。二维码和大陆 IP 屏蔽功能需要启用 Alpine `community` 仓库；对应包为 `libqrencode-tools` 和 `py3-maxminddb`。
+
+Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的 systemd 项目，不属于此 Alpine 版本的支持范围；菜单会显示提示并返回。Alpine 官方仓库未提供 `simple-obfs`，混淆插件仅在已自行安装 `obfs-server` 时可用。
 
 ## 主要功能
 
@@ -107,50 +110,6 @@ Alpine 菜单中的 Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的
 - 生成配置二维码
 - 支持 IPv4/IPv6 地址
 
-## 流量管理
-
-<details>
-   <summary>流量管理说明[展开查看]</summary>
-
-### 功能说明
-通过 iptables 对 SS2022 节点进行流量计数，支持设置月度流量上限，超限后自动暂停节点，每月指定日期自动重置。
-
-### 计量原理
-SS2022 监听在指定端口（TCP + UDP），流量管理通过在 iptables 中添加专用计数规则（`PSM_TRF` 链）统计该端口的进出字节数，不影响数据包的正常转发。超限时向 `INPUT` 链插入 DROP 规则，阻断新连接。
-
-```
-客户端 ──TCP/UDP──▶ iptables 计数 ──▶ ss-rust
-                         │
-                       超限时 DROP
-```
-
-### 使用方式
-在管理菜单中选择 **9. 流量管理**，按提示安装并使用 PSM：
-
-```bash
-bash <(curl -fsSL https://psm.jinqians.com)
-```
-
-进入 PSM 后选择 **15. 流量管理** → **添加节点** → 选择 SS2022，设置流量上限（GB）和每月重置日。
-
-### 自动检查定时器
-首次配置后会提示安装 systemd 定时器（`psm-traffic.timer`），每分钟执行一次检查：
-- 累计流量 ≥ 限额 → 自动暂停节点（TCP + UDP 同时阻断）
-- 到达重置日 → 清零计数并恢复节点
-
-手动查看定时器状态：
-```bash
-systemctl status psm-traffic.timer
-```
-
-### 注意事项
-- 流量计数基于 iptables 字节计数器，**服务器重启后计数器归零**，但已累计的流量数据保存在 `/etc/psm/traffic/state.json` 中，下次计数从断点续计
-- SS2022 同时使用 TCP 和 UDP，两种协议均会被计入流量并在超限时一同暂停
-- 暂停节点仅阻断**新连接**，已建立的连接会在自然断开后失效
-- 若系统使用 nftables，需确认 iptables 兼容层已启用（`iptables-legacy` 或 `iptables-nft`）
-
-</details>
-
 ## 注意事项
 
 1. 安装 ShadowTLS 之前需要先安装 Shadowsocks Rust
@@ -161,9 +120,8 @@ systemctl status psm-traffic.timer
 ## 问题排查
 
 如果遇到问题，可以：
-1. Debian/Ubuntu/CentOS 查看 SS 状态和日志：`systemctl status ss-rust`、`journalctl -xe --unit ss-rust`
-2. Alpine 查看 SS 状态和日志：`rc-service ss-rust status`、`tail -n 50 /var/log/ss-rust.log`
-3. Alpine 查看 ShadowTLS：`rc-service shadowtls-ss status`，日志位于 `/var/log/shadowtls-shadow-tls-ss.log`
+1. 查看 SS 状态和日志：`rc-service ss-rust status`、`tail -n 50 /var/log/ss-rust.log`
+2. 查看 ShadowTLS：`rc-service shadowtls-ss status`，日志位置可从 `/etc/init.d/shadowtls-ss` 的 `output_log` 字段确认
 
 ## 更新日志
 

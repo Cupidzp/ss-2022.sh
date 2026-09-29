@@ -30,7 +30,6 @@ BINARY_PATH="/usr/local/bin/ss-rust"
 CONFIG_PATH="/etc/ss-rust/config.json"
 PORTS_DIR="/etc/ss-rust/ports"
 VERSION_FILE="/etc/ss-rust/ver.txt"
-SYSCTL_CONF="/etc/sysctl.d/local.conf"
 MAINLAND_BLOCK_SCRIPT="/usr/local/bin/block-mainland.sh"
 MAINLAND_EXTRACT_SCRIPT="/usr/local/bin/extract-cn-ip-from-mmdb.py"
 REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
@@ -80,166 +79,81 @@ check_root() {
     fi
 }
 
-# 检测操作系统
+# 仅支持 Alpine Linux 3.21-3.23
 detect_os() {
-    # 优先读取 /etc/os-release（现代发行版标准，可识别 AlmaLinux/Rocky 等 RHEL 系）
-    if [[ -f /etc/os-release ]]; then
-        local os_id os_like os_version
-        os_id=$(. /etc/os-release 2>/dev/null && echo "${ID:-}")
-        os_like=$(. /etc/os-release 2>/dev/null && echo "${ID_LIKE:-}")
-        os_version=$(. /etc/os-release 2>/dev/null && echo "${VERSION_ID:-}")
-        case "${os_id}" in
-            alpine)
-                OS_TYPE="alpine"
-                OS_VERSION="${os_version:-$(cat /etc/alpine-release 2>/dev/null)}"
-                ;;
-            debian) OS_TYPE="debian" ;;
-            ubuntu) OS_TYPE="ubuntu" ;;
-            centos|rhel|almalinux|rocky|fedora|ol|amzn|anolis|openEuler) OS_TYPE="centos" ;;
-            *)
-                if [[ "${os_like}" == *debian* || "${os_like}" == *ubuntu* ]]; then
-                    OS_TYPE="debian"
-                elif [[ "${os_like}" == *rhel* || "${os_like}" == *fedora* || "${os_like}" == *centos* ]]; then
-                    OS_TYPE="centos"
-                fi
-                ;;
-        esac
+    local os_id os_version
+    if [[ ! -f /etc/os-release ]]; then
+        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23"
     fi
 
-    # 旧的检测方式作为兜底
-    if [[ -z "${OS_TYPE}" ]]; then
-        if [[ -f /etc/redhat-release ]]; then
-            OS_TYPE="centos"
-        elif grep -q -E -i "debian" /etc/issue 2>/dev/null; then
-            OS_TYPE="debian"
-        elif grep -q -E -i "ubuntu" /etc/issue 2>/dev/null; then
-            OS_TYPE="ubuntu"
-        elif grep -q -E -i "centos|red hat|redhat" /etc/issue 2>/dev/null; then
-            OS_TYPE="centos"
-        elif grep -q -E -i "debian" /proc/version 2>/dev/null; then
-            OS_TYPE="debian"
-        elif grep -q -E -i "ubuntu" /proc/version 2>/dev/null; then
-            OS_TYPE="ubuntu"
-        elif grep -q -E -i "centos|red hat|redhat" /proc/version 2>/dev/null; then
-            OS_TYPE="centos"
-        else
-            error_exit "不支持的操作系统"
-        fi
+    . /etc/os-release
+    os_id=${ID:-}
+    os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
+    if [[ "${os_id}" != "alpine" ]]; then
+        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23；检测到 ${os_id:-未知系统}"
     fi
 
-    if [[ "${OS_TYPE}" == "alpine" ]]; then
-        case "${OS_VERSION}" in
-            3.21*|3.22*|3.23*) ;;
-            *) echo -e "${WARNING} Alpine ${OS_VERSION:-未知版本} 不在当前声明支持的 3.21-3.23 范围内" ;;
-        esac
-    fi
-}
+    case "${os_version}" in
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
+        *) error_exit "仅支持 Alpine Linux 3.21、3.22、3.23；检测到 ${os_version:-未知版本}" ;;
+    esac
 
-# RHEL 系包管理器（AlmaLinux/Rocky 9 已无 yum 命令本体，优先 dnf）
-rhel_pkg_mgr() {
-    if command -v dnf >/dev/null 2>&1; then
-        echo "dnf"
-    else
-        echo "yum"
-    fi
-}
-
-service_uses_openrc() {
-    [[ "${OS_TYPE}" == "alpine" ]]
+    OS_TYPE="alpine"
+    OS_VERSION="${os_version}"
 }
 
 service_definition_path() {
     local service_name=$1
-    if service_uses_openrc; then
-        echo "/etc/init.d/${service_name}"
-    else
-        echo "/etc/systemd/system/${service_name}.service"
-    fi
+    echo "/etc/init.d/${service_name}"
 }
 
 service_read_arg() {
     local service_file=$1 arg_name=$2 line value
-    if service_uses_openrc; then
-        line=$(sed -n 's/^command_args="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
-    else
-        line=$(sed -n 's/^ExecStart=//p' "${service_file}" | head -n 1)
-    fi
+    line=$(sed -n 's/^command_args="\(.*\)"$/\1/p' "${service_file}" | head -n 1)
     value=${line#*"${arg_name}" }
     [[ "${value}" == "${line}" ]] && return 1
     echo "${value%% *}"
 }
 
 service_start() {
-    if service_uses_openrc; then
-        rc-service "$1" start
-    else
-        systemctl start "$1"
-    fi
+    rc-service "$1" start
 }
 
 service_stop() {
-    if service_uses_openrc; then
-        rc-service "$1" stop
-    else
-        systemctl stop "$1"
-    fi
+    rc-service "$1" stop
 }
 
 service_restart() {
-    if service_uses_openrc; then
-        if rc-service "$1" status >/dev/null 2>&1; then
-            rc-service "$1" restart
-        else
-            rc-service "$1" start
-        fi
+    if rc-service "$1" status >/dev/null 2>&1; then
+        rc-service "$1" restart
     else
-        systemctl restart "$1"
+        rc-service "$1" start
     fi
 }
 
 service_active() {
-    if service_uses_openrc; then
-        rc-service "$1" status >/dev/null 2>&1
-    else
-        systemctl is-active "$1" >/dev/null 2>&1
-    fi
+    rc-service "$1" status >/dev/null 2>&1
 }
 
 service_enable() {
-    if service_uses_openrc; then
-        rc-update add "$1" default
-    else
-        systemctl enable "$1"
-    fi
+    rc-update add "$1" default
 }
 
 service_disable() {
-    if service_uses_openrc; then
-        rc-update del "$1" default
-    else
-        systemctl disable "$1"
-    fi
+    rc-update del "$1" default
 }
 
 service_reload() {
-    service_uses_openrc || systemctl daemon-reload
+    :
 }
 
 service_show_status() {
-    if service_uses_openrc; then
-        rc-service "$1" status
-    else
-        systemctl status "$1" --no-pager
-    fi
+    rc-service "$1" status
 }
 
 service_show_logs() {
-    if service_uses_openrc; then
-        local log_file="/var/log/$1.log"
-        [[ -f "${log_file}" ]] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
-    else
-        journalctl --no-pager -n 50 -u "$1"
-    fi
+    local log_file="/var/log/$1.log"
+    [[ -f "${log_file}" ]] && tail -n 50 "${log_file}" || echo "日志文件尚不存在：${log_file}"
 }
 
 install_openrc_service() {
@@ -269,57 +183,15 @@ EOF
 # 检测系统架构
 detect_arch() {
     local arch=$(uname -m)
-    local os=$(uname -s)
-    
-    case "${os}" in
-        "Darwin")
-            case "${arch}" in
-                "arm64")
-                    OS_ARCH="aarch64-apple-darwin"
-                    ;;
-                "x86_64")
-                    OS_ARCH="x86_64-apple-darwin"
-                    ;;
-            esac
-            ;;
-        "Linux")
-            case "${arch}" in
-                "x86_64")
-                    if [[ ${OS_TYPE} == "alpine" ]]; then
-                        OS_ARCH="x86_64-unknown-linux-musl"
-                    else
-                        OS_ARCH="x86_64-unknown-linux-gnu"
-                    fi
-                    ;;
-                "aarch64")
-                    if [[ ${OS_TYPE} == "alpine" ]]; then
-                        OS_ARCH="aarch64-unknown-linux-musl"
-                    else
-                        OS_ARCH="aarch64-unknown-linux-gnu"
-                    fi
-                    ;;
-                "armv7l"|"armv7")
-                    # 检查是否支持硬浮点
-                    if grep -q "gnueabihf" /proc/cpuinfo; then
-                        OS_ARCH="armv7-unknown-linux-gnueabihf"
-                    else
-                        OS_ARCH="arm-unknown-linux-gnueabi"
-                    fi
-                    ;;
-                "armv6l")
-                    OS_ARCH="arm-unknown-linux-gnueabi"
-                    ;;
-                "i686"|"i386")
-                    OS_ARCH="i686-unknown-linux-musl"
-                    ;;
-                *)
-                    error_exit "不支持的CPU架构: ${arch}"
-                    ;;
-            esac
-            ;;
-        *)
-            error_exit "不支持的操作系统: ${os}"
-            ;;
+    [[ "$(uname -s)" == "Linux" ]] || error_exit "仅支持运行 Alpine Linux 的 Linux 服务器"
+
+    case "${arch}" in
+        x86_64) OS_ARCH="x86_64-unknown-linux-musl" ;;
+        aarch64) OS_ARCH="aarch64-unknown-linux-musl" ;;
+        armv7l|armv7) OS_ARCH="armv7-unknown-linux-musleabihf" ;;
+        armv6l) OS_ARCH="arm-unknown-linux-musleabi" ;;
+        i686|i386) OS_ARCH="i686-unknown-linux-musl" ;;
+        *) error_exit "不支持的CPU架构: ${arch}" ;;
     esac
     
     echo -e "${INFO} 检测到系统架构为 [ ${OS_ARCH} ]"
@@ -449,42 +321,8 @@ download_ss() {
     local filename=""
 
     case "${arch}" in
-        # macOS 系统
-        "aarch64-apple-darwin"|"x86_64-apple-darwin")
+        "x86_64-unknown-linux-musl"|"aarch64-unknown-linux-musl"|"arm-unknown-linux-musleabi"|"armv7-unknown-linux-musleabihf"|"i686-unknown-linux-musl")
             filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Linux x86_64 系统
-        "x86_64-unknown-linux-gnu"|"x86_64-unknown-linux-musl")
-            filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Linux ARM 64位
-        "aarch64-unknown-linux-gnu"|"aarch64-unknown-linux-musl")
-            filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Linux ARM 32位
-        "arm-unknown-linux-gnueabi"|"arm-unknown-linux-gnueabihf"|"arm-unknown-linux-musleabi"|"arm-unknown-linux-musleabihf")
-            filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Linux ARMv7
-        "armv7-unknown-linux-gnueabihf"|"armv7-unknown-linux-musleabihf")
-            filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Linux i686
-        "i686-unknown-linux-musl")
-            filename="shadowsocks-v${version}.${arch}.tar.xz"
-            ;;
-        
-        # Windows
-        "x86_64-pc-windows-gnu")
-            filename="shadowsocks-v${version}.${arch}.zip"
-            ;;
-        "x86_64-pc-windows-msvc")
-            filename="shadowsocks-v${version}.${arch}.zip"
             ;;
             
         *)
@@ -538,32 +376,7 @@ download() {
 # 安装系统服务
 install_service() {
     echo -e "${INFO} 开始安装系统服务..."
-    if service_uses_openrc; then
-        install_openrc_service "ss-rust" "${BINARY_PATH}" "-c ${CONFIG_PATH}" "/var/log/ss-rust.log" "Shadowsocks Rust Service"
-    else
-        cat > /etc/systemd/system/ss-rust.service << EOF
-[Unit]
-Description=Shadowsocks Rust Service
-After=network-online.target
-Wants=network-online.target systemd-networkd-wait-online.service
-
-[Service]
-Type=simple
-User=root
-ExecStart=${BINARY_PATH} -c ${CONFIG_PATH}
-Restart=on-failure
-RestartSec=3s
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        echo -e "${INFO} 重新加载 systemd 配置..."
-        service_reload || error_exit "systemctl daemon-reload 失败！"
-        echo -e "${INFO} 启用 ss-rust 服务..."
-        service_enable ss-rust || error_exit "启用 ss-rust 服务失败！"
-    fi
+    install_openrc_service "ss-rust" "${BINARY_PATH}" "-c ${CONFIG_PATH}" "/var/log/ss-rust.log" "Shadowsocks Rust Service"
     
     echo -e "${SUCCESS} Shadowsocks Rust 服务配置完成！"
 }
@@ -573,57 +386,20 @@ EOF
 ensure_time_sync() {
     echo -e "${INFO} 检查系统时间同步（SS2022 协议要求时间误差在 30 秒内）..."
 
-    if service_uses_openrc; then
-        if service_active chronyd || service_active chrony; then
-            echo -e "${INFO} 检测到 NTP 时间同步服务已在运行"
-            return 0
-        fi
-        if command -v chronyd >/dev/null 2>&1; then
-            service_enable chronyd >/dev/null 2>&1 || true
-            service_start chronyd >/dev/null 2>&1 || true
-            if service_active chronyd; then
-                echo -e "${SUCCESS} chronyd 时间同步已启用"
-                return 0
-            fi
-        fi
-        echo -e "${WARNING} 未检测到可用的 OpenRC NTP 服务；请确认 Alpine 时间同步已配置"
-        return 0
-    fi
-
-    # 已有 NTP 同步服务在运行则跳过
-    if service_active chronyd || \
-       service_active chrony || \
-       service_active systemd-timesyncd || \
-       service_active ntp || \
-       service_active ntpd; then
+    if service_active chronyd; then
         echo -e "${INFO} 检测到 NTP 时间同步服务已在运行"
         return 0
     fi
 
-    # 优先启用系统自带的 systemd-timesyncd
-    if systemctl list-unit-files systemd-timesyncd.service 2>/dev/null | grep -q "systemd-timesyncd"; then
-        if timedatectl set-ntp true 2>/dev/null || { service_enable systemd-timesyncd && service_start systemd-timesyncd; } 2>/dev/null; then
-            echo -e "${SUCCESS} 已启用 systemd-timesyncd 时间同步"
-            return 0
-        fi
+    if command -v chronyd >/dev/null 2>&1; then
+        service_enable chronyd >/dev/null 2>&1 || true
+        service_start chronyd >/dev/null 2>&1 || true
     fi
 
-    # 回退：安装并启用 chrony
-    echo -e "${INFO} 正在安装 chrony 时间同步服务..."
-    if [[ ${OS_TYPE} == "centos" ]]; then
-        $(rhel_pkg_mgr) install -y chrony || { echo -e "${WARNING} chrony 安装失败"; }
-        service_enable chronyd 2>/dev/null || true
-        service_start chronyd 2>/dev/null || true
+    if service_active chronyd; then
+        echo -e "${SUCCESS} chronyd 时间同步已启用"
     else
-        apt-get install -y chrony || { echo -e "${WARNING} chrony 安装失败"; }
-        # Debian 服务名为 chrony，RHEL 系为 chronyd
-        { service_enable chrony && service_start chrony; } 2>/dev/null || { service_enable chronyd && service_start chronyd; } 2>/dev/null || true
-    fi
-
-    if service_active chronyd || service_active chrony; then
-        echo -e "${SUCCESS} chrony 时间同步已启用"
-    else
-        echo -e "${WARNING} 未能自动启用时间同步，请手动配置 NTP"
+        echo -e "${WARNING} 未能自动启用 chronyd；LXC 容器通常继承宿主机时钟，请确认宿主机时间准确"
         echo -e "${WARNING} 使用 2022 系列加密时，若客户端无法连接请优先检查服务器时间是否准确"
     fi
     return 0
@@ -633,20 +409,9 @@ ensure_time_sync() {
 install_dependencies() {
     echo -e "${INFO} 开始安装系统依赖..."
 
-    if [[ ${OS_TYPE} == "alpine" ]]; then
-        error_exit "Alpine 依赖包名须先在真实目标系统用 apk search/info 核验"
-    elif [[ ${OS_TYPE} == "centos" ]]; then
-        local pkg_mgr
-        pkg_mgr=$(rhel_pkg_mgr)
-        # qrencode 等包在 RHEL 系需要 EPEL 源
-        ${pkg_mgr} install -y epel-release || echo -e "${WARNING} EPEL 源安装失败，qrencode 可能无法安装"
-        ${pkg_mgr} install -y jq gzip wget curl unzip xz openssl tar || error_exit "系统依赖安装失败，请检查网络和软件源"
-        ${pkg_mgr} install -y qrencode || echo -e "${WARNING} qrencode 安装失败，二维码功能不可用，不影响其他功能"
-    else
-        apt-get update || echo -e "${WARNING} apt-get update 失败，将尝试直接安装"
-        apt-get install -y jq gzip wget curl unzip xz-utils openssl tar || error_exit "系统依赖安装失败，请检查网络和软件源"
-        apt-get install -y qrencode || echo -e "${WARNING} qrencode 安装失败，二维码功能不可用，不影响其他功能"
-    fi
+    apk add --no-cache bash busybox-openrc chrony chrony-openrc coreutils curl grep gzip iproute2 ipset iptables jq openrc openssl tar tzdata unzip wget xz || \
+        error_exit "Alpine 依赖安装失败，请检查 apk 仓库配置和网络"
+    apk add --no-cache libqrencode-tools >/dev/null 2>&1 || echo -e "${WARNING} 未安装 libqrencode-tools，二维码功能不可用"
     
     # 设置时区
     echo -e "${CYAN}正在设置时区...${RESET}"
@@ -787,51 +552,7 @@ alpine_firewall_add_port() {
 check_firewall() {
     local port=$1
     echo -e "${INFO} 检查防火墙配置..."
-
-    if service_uses_openrc; then
-        alpine_firewall_add_port "${port}"
-        return 0
-    fi
-    
-    # 检查 UFW
-    if command -v ufw >/dev/null 2>&1; then
-        echo -e "${INFO} 检测到 UFW 防火墙..."
-        if ufw status | grep -qw active; then
-            echo -e "${INFO} 正在将端口 ${port} 加入 UFW 规则..."
-            ufw allow ${port}/tcp
-            ufw allow ${port}/udp
-            echo -e "${SUCCESS} UFW 端口开放完成！"
-        fi
-    fi
-    
-    # 检查 firewalld（RHEL 系默认防火墙）
-    local firewalld_active=0
-    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewalld_active=1
-        echo -e "${INFO} 检测到 firewalld 防火墙..."
-        echo -e "${INFO} 正在将端口 ${port} 加入 firewalld 规则..."
-        firewall-cmd --permanent --add-port=${port}/tcp >/dev/null 2>&1 || echo -e "${WARNING} firewalld TCP 规则添加失败"
-        firewall-cmd --permanent --add-port=${port}/udp >/dev/null 2>&1 || echo -e "${WARNING} firewalld UDP 规则添加失败"
-        firewall-cmd --reload >/dev/null 2>&1 || echo -e "${WARNING} firewalld 规则重载失败"
-        echo -e "${SUCCESS} firewalld 端口开放完成！"
-    fi
-
-    # 检查 iptables（firewalld 已处理时跳过，避免规则冲突）
-    if [[ ${firewalld_active} -eq 0 ]] && command -v iptables >/dev/null 2>&1; then
-        echo -e "${INFO} 检测到 iptables 防火墙..."
-        echo -e "${INFO} 正在将端口 ${port} 加入 iptables 规则..."
-        iptables -I INPUT -p tcp --dport ${port} -j ACCEPT
-        iptables -I INPUT -p udp --dport ${port} -j ACCEPT
-        echo -e "${SUCCESS} iptables 端口开放完成！"
-
-        # 保存 iptables 规则
-        if [[ ${OS_TYPE} == "centos" ]]; then
-            # RHEL 系默认没有 iptables-services，保存失败不影响本次会话的规则生效
-            service iptables save 2>/dev/null || echo -e "${WARNING} iptables 规则保存失败（未安装 iptables-services），重启后需重新放行端口"
-        else
-            iptables-save > /etc/iptables.rules
-        fi
-    fi
+    alpine_firewall_add_port "${port}"
 }
 
 # 关闭防火墙上对某端口的放行（改端口/删节点时回收，避免规则越积越多）
@@ -840,63 +561,32 @@ close_firewall_port() {
     [[ -z "${port}" ]] && return 0
     echo -e "${INFO} 回收端口 ${port} 的防火墙放行规则..."
 
-    if service_uses_openrc; then
-        local ports_file="${INSTALL_DIR}/firewall-ports"
-        local marker="${INSTALL_DIR}/firewall-chain-managed"
-        if [[ -f "${marker}" ]] && command -v iptables >/dev/null 2>&1; then
-            while iptables -C SS2022_ALLOW -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
-                iptables -D SS2022_ALLOW -p tcp --dport "${port}" -j ACCEPT || break
-            done
-            while iptables -C SS2022_ALLOW -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
-                iptables -D SS2022_ALLOW -p udp --dport "${port}" -j ACCEPT || break
-            done
-            if [[ -f "${ports_file}" ]]; then
-                local tmp_ports="${ports_file}.tmp"
-                grep -vxF "${port}" "${ports_file}" > "${tmp_ports}" || true
-                mv "${tmp_ports}" "${ports_file}"
-            fi
-            if [[ ! -s "${ports_file}" ]]; then
-                service_stop ss-rust-firewall >/dev/null 2>&1 || true
-                service_disable ss-rust-firewall >/dev/null 2>&1 || true
-                rm -f /etc/init.d/ss-rust-firewall "${ports_file}" "${marker}"
-            else
-                alpine_firewall_setup_service
-            fi
+    local ports_file="${INSTALL_DIR}/firewall-ports"
+    local marker="${INSTALL_DIR}/firewall-chain-managed"
+    if [[ -f "${marker}" ]] && command -v iptables >/dev/null 2>&1; then
+        while iptables -C SS2022_ALLOW -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
+            iptables -D SS2022_ALLOW -p tcp --dport "${port}" -j ACCEPT || break
+        done
+        while iptables -C SS2022_ALLOW -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1; do
+            iptables -D SS2022_ALLOW -p udp --dport "${port}" -j ACCEPT || break
+        done
+        if [[ -f "${ports_file}" ]]; then
+            local tmp_ports="${ports_file}.tmp"
+            grep -vxF "${port}" "${ports_file}" > "${tmp_ports}" || true
+            mv "${tmp_ports}" "${ports_file}"
         fi
-        return 0
-    fi
-
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qw active; then
-        ufw delete allow ${port}/tcp >/dev/null 2>&1 || true
-        ufw delete allow ${port}/udp >/dev/null 2>&1 || true
-    fi
-
-    local firewalld_active=0
-    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewalld_active=1
-        firewall-cmd --permanent --remove-port=${port}/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --remove-port=${port}/udp >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-    fi
-
-    if [[ ${firewalld_active} -eq 0 ]] && command -v iptables >/dev/null 2>&1; then
-        # 同一条规则可能被重复插入过，循环删干净
-        while iptables -C INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1; do
-            iptables -D INPUT -p tcp --dport ${port} -j ACCEPT >/dev/null 2>&1 || break
-        done
-        while iptables -C INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1; do
-            iptables -D INPUT -p udp --dport ${port} -j ACCEPT >/dev/null 2>&1 || break
-        done
-        if [[ ${OS_TYPE} == "centos" ]]; then
-            service iptables save >/dev/null 2>&1 || true
+        if [[ ! -s "${ports_file}" ]]; then
+            service_stop ss-rust-firewall >/dev/null 2>&1 || true
+            service_disable ss-rust-firewall >/dev/null 2>&1 || true
+            rm -f /etc/init.d/ss-rust-firewall "${ports_file}" "${marker}"
         else
-            iptables-save > /etc/iptables.rules 2>/dev/null || true
+            alpine_firewall_setup_service
         fi
     fi
 }
 
 # SS 端口变更后同步 ShadowTLS 的后端端口
-# shadowtls-ss.service 里 --server 127.0.0.1:<端口> 是写死的，不同步会导致 ShadowTLS 直接失联
+# shadowtls-ss OpenRC 服务里 --server 127.0.0.1:<端口> 是写死的，不同步会导致 ShadowTLS 直接失联
 sync_shadowtls_backend_port() {
     local new_port=$1
     local svc
@@ -1199,29 +889,8 @@ install_obfs_plugin() {
 
     [[ -z "${OS_TYPE}" ]] && detect_os
 
-    if [[ ${OS_TYPE} == "centos" ]]; then
-        echo -e "${WARNING} RHEL 系（CentOS/AlmaLinux/Rocky）官方源没有 simple-obfs 软件包"
-        echo -e "${WARNING} 请自行编译安装 obfs-server（https://github.com/shadowsocks/simple-obfs）后再启用该插件"
-        return 1
-    fi
-
-    if [[ ${OS_TYPE} == "alpine" ]]; then
-        echo -e "${WARNING} Alpine simple-obfs 包名尚未在目标服务器核验，暂不自动安装"
-        return 1
-    fi
-
-    echo -e "${INFO} 正在安装 simple-obfs..."
-    apt-get update
-    if ! apt-get install -y simple-obfs; then
-        echo -e "${WARNING} simple-obfs 安装失败，请检查软件源"
-        return 1
-    fi
-
-    if ! command -v obfs-server >/dev/null 2>&1; then
-        echo -e "${WARNING} 安装完成但未找到 obfs-server 命令"
-        return 1
-    fi
-    return 0
+    echo -e "${WARNING} Alpine v3.21-v3.23 官方仓库未提供 simple-obfs；如需使用，请先自行安装 obfs-server"
+    return 1
 }
 
 # 设置混淆插件（obfs）
@@ -1364,6 +1033,9 @@ Install() {
     
     echo -e "${Info} 检测系统信息..."
     detect_os
+
+    echo -e "${Info} 开始安装/配置依赖..."
+    install_dependencies
     
     echo -e "${Info} 开始设置配置..."
     set_port
@@ -1373,12 +1045,6 @@ Install() {
     set_dns
     set_plugin
 
-    echo -e "${Info} 开始安装/配置依赖..."
-    install_dependencies
-    if service_uses_openrc; then
-        check_firewall "${SS_PORT}"
-    fi
-    
     echo -e "${Info} 开始下载/安装..."
     detect_arch
     get_latest_version
@@ -1407,13 +1073,8 @@ Install() {
     else
         echo -e "${Error} Shadowsocks Rust 启动失败，请检查日志！"
         echo -e "${Info} 您可以使用以下命令查看详细日志："
-        if service_uses_openrc; then
-            echo -e " - rc-service ss-rust status"
-            echo -e " - tail -n 50 /var/log/ss-rust.log"
-        else
-            echo -e " - systemctl status ss-rust"
-            echo -e " - journalctl -xe --unit ss-rust"
-        fi
+        echo -e " - rc-service ss-rust status"
+        echo -e " - tail -n 50 /var/log/ss-rust.log"
         Before_Start_Menu
     fi
 }
@@ -1496,16 +1157,10 @@ Update() {
             download_ss "${new_ver#v}" "${OS_ARCH}"
             service_restart ss-rust
             # 多端口节点是独立服务，不重启会继续跑旧版本进程
-            local extra_service svc_name service_dir
-            if service_uses_openrc; then
-                service_dir="/etc/init.d"
-            else
-                service_dir="/etc/systemd/system"
-            fi
-            for extra_service in "${service_dir}"/ss-rust-*; do
+            local extra_service svc_name
+            for extra_service in /etc/init.d/ss-rust-*; do
                 [[ -f "${extra_service}" ]] || continue
                 svc_name=$(basename "${extra_service}")
-                svc_name=${svc_name%.service}
                 [[ "${svc_name#ss-rust-}" =~ ^[0-9]+$ ]] || continue
                 echo -e "${Info} 重启多端口节点服务 ${svc_name} ..."
                 service_restart "${svc_name}" 2>/dev/null || echo -e "${WARNING} ${svc_name} 重启失败"
@@ -1537,22 +1192,14 @@ Uninstall() {
         check_status
         [[ "$status" == "running" ]] && service_stop ss-rust
         service_disable ss-rust
-        if service_uses_openrc; then
-            rm -f "$(service_definition_path ss-rust)"
-        fi
+        rm -f "$(service_definition_path ss-rust)"
         [[ -n "${main_port}" ]] && close_firewall_port "${main_port}"
 
         # 清理多端口节点服务
-        local extra_service service_dir
-        if service_uses_openrc; then
-            service_dir="/etc/init.d"
-        else
-            service_dir="/etc/systemd/system"
-        fi
-        for extra_service in "${service_dir}"/ss-rust-*; do
+        local extra_service
+        for extra_service in /etc/init.d/ss-rust-*; do
             [[ -f "${extra_service}" ]] || continue
             local svc_name=$(basename "${extra_service}")
-            svc_name=${svc_name%.service}
             local extra_port="${svc_name#ss-rust-}"
             [[ "${extra_port}" =~ ^[0-9]+$ ]] || continue
             service_stop "${svc_name}" 2>/dev/null || true
@@ -1560,7 +1207,7 @@ Uninstall() {
             rm -f "${extra_service}"
             [[ "${extra_port}" =~ ^[0-9]+$ ]] && close_firewall_port "${extra_port}"
         done
-        if service_uses_openrc && [[ -f "${INSTALL_DIR}/firewall-ports" ]]; then
+        if [[ -f "${INSTALL_DIR}/firewall-ports" ]]; then
             while IFS= read -r extra_port; do
                 [[ "${extra_port}" =~ ^[0-9]+$ ]] && close_firewall_port "${extra_port}"
             done < "${INSTALL_DIR}/firewall-ports"
@@ -1947,7 +1594,7 @@ mainland_block_menu() {
 }
 
 # ========== 多端口节点管理 ==========
-# 每个额外端口使用独立的配置文件和 systemd 服务（ss-rust-<端口>），互不影响
+# 每个额外端口使用独立的配置文件和 OpenRC 服务（ss-rust-<端口>），互不影响
 
 # 检查端口是否已被系统占用
 port_in_use() {
@@ -2027,29 +1674,7 @@ add_extra_port() {
     fi
 
     # 创建独立服务
-    if service_uses_openrc; then
-        install_openrc_service "ss-rust-${new_port}" "${BINARY_PATH}" "-c ${node_config}" "/var/log/ss-rust-${new_port}.log" "Shadowsocks Rust Service (Port ${new_port})"
-    else
-        cat > "/etc/systemd/system/ss-rust-${new_port}.service" << EOF
-[Unit]
-Description=Shadowsocks Rust Service (Port ${new_port})
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=${BINARY_PATH} -c ${node_config}
-Restart=on-failure
-RestartSec=3s
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        service_reload
-        service_enable "ss-rust-${new_port}" >/dev/null 2>&1 || true
-    fi
+    install_openrc_service "ss-rust-${new_port}" "${BINARY_PATH}" "-c ${node_config}" "/var/log/ss-rust-${new_port}.log" "Shadowsocks Rust Service (Port ${new_port})"
     service_restart "ss-rust-${new_port}" || true
     sleep 2
 

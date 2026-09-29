@@ -1,5 +1,13 @@
 # 更新日志
 
+## v4.5（Alpine 专用版）
+
+- 仅支持 Alpine Linux 3.21、3.22、3.23，其他发行版和 Alpine 其他版本会被入口检查拒绝。
+- Shadowsocks Rust 使用 musl 发布包，依赖统一通过 `apk` 安装，服务统一由 OpenRC 管理。
+- ShadowTLS、多端口节点和中国大陆 IP 屏蔽的持久化/定时任务统一适配 OpenRC 与 Alpine crond。
+- 大陆 IP 屏蔽使用 Alpine `community` 仓库的 `py3-maxminddb`，不再通过 pip 修改系统 Python 环境。
+- Alpine 官方仓库未提供 `simple-obfs`；不再尝试使用其他发行版的包管理器安装。
+
 ## v4.4（2026-08-25）
 
 ss-2022.sh 1.9 → 2.0，menu.sh 4.3 → 4.4，block-mainland.sh 1.0 → 1.1

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 从MaxMind GeoIP2 mmdb文件提取中国IP CIDR段
-需要安装: pip install maxminddb
+需要安装: apk add python3 py3-maxminddb
 """
 
 import sys
@@ -27,7 +27,7 @@ def check_dependencies():
         return True
     except ImportError:
         print("[错误] 未安装maxminddb库", file=sys.stderr)
-        print("[信息] 请运行: pip install maxminddb", file=sys.stderr)
+        print("[信息] Alpine 安装命令: apk add python3 py3-maxminddb", file=sys.stderr)
         return False
 
 
@@ -180,7 +180,7 @@ def main():
     # 检查依赖
     if not check_dependencies():
         print("\n[提示] 安装依赖后重试:")
-        print("  pip install maxminddb")
+        print("  apk add python3 py3-maxminddb")
         sys.exit(1)
     
     # 提取IP

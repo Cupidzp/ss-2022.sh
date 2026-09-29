@@ -29,17 +29,10 @@ MAINLAND_IP_FILE="${IPLIST_DIR}/mainland_cn.txt"
 MMDB_FILE="${IPLIST_DIR}/Country.mmdb"
 IPTABLES_RULES="/etc/ss-rust/mainland_cn_rules.sh"
 EXTRACT_SCRIPT="$(cd "$(dirname "$0")"; pwd)/extract-cn-ip-from-mmdb.py"
-if [ -f /etc/alpine-release ]; then
-    SERVICE_DIR="/etc/init.d"
-    BOOT_SERVICE_NAME="block-mainland"
-    BOOT_SERVICE_FILE="${SERVICE_DIR}/${BOOT_SERVICE_NAME}"
-    AUTO_UPDATE_CRON_FILE="/etc/crontabs/root"
-else
-    SERVICE_DIR="/etc/systemd/system"
-    BOOT_SERVICE_NAME="block-mainland.service"
-    BOOT_SERVICE_FILE="${SERVICE_DIR}/${BOOT_SERVICE_NAME}"
-    AUTO_UPDATE_CRON_FILE="/etc/cron.d/block-mainland-auto-update"
-fi
+SERVICE_DIR="/etc/init.d"
+BOOT_SERVICE_NAME="block-mainland"
+BOOT_SERVICE_FILE="${SERVICE_DIR}/${BOOT_SERVICE_NAME}"
+AUTO_UPDATE_CRON_FILE="/etc/crontabs/root"
 AUTO_UPDATE_LOG_FILE="/var/log/block-mainland-update.log"
 DAILY_CRON_EXPR="30 4 * * *"
 WEEKLY_CRON_EXPR="30 4 * * 1"
@@ -60,6 +53,19 @@ readonly ERROR="${RED}[错误]${PLAIN}"
 readonly WARNING="${YELLOW}[警告]${PLAIN}"
 readonly SUCCESS="${GREEN}[成功]${PLAIN}"
 
+require_supported_alpine() {
+    local os_id os_version
+    [ -f /etc/os-release ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1; }
+    . /etc/os-release
+    os_id=${ID:-}
+    os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
+    [ "${os_id}" = "alpine" ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1; }
+    case "${os_version}" in
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
+        *) echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1 ;;
+    esac
+}
+
 # 检查root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -71,76 +77,17 @@ check_root() {
 # 检查依赖
 check_dependencies() {
     echo -e "${INFO} 检查依赖..."
-    
-    local missing_deps=()
-    local missing_python=false
-    
-    # 检查必需的工具
-    for cmd in curl iptables python3; do
-        if ! command -v "$cmd" &> /dev/null; then
-            missing_deps+=("$cmd")
-        fi
-    done
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        echo -e "${WARNING} 缺少依赖: ${missing_deps[*]}"
-        echo -e "${INFO} 正在安装依赖..."
 
-        if [ -f /etc/alpine-release ]; then
-            echo -e "${ERROR} Alpine 依赖包名需先在目标系统核验，当前缺少: ${missing_deps[*]}"
-            return 1
-        elif command -v apt-get &> /dev/null; then
-            apt-get update
-            apt-get install -y "${missing_deps[@]}"
-        elif command -v yum &> /dev/null; then
-            yum install -y "${missing_deps[@]}"
-        else
-            echo -e "${ERROR} 无法自动安装依赖，请手动安装后重试"
-            exit 1
-        fi
+    if ! apk add --no-cache busybox-openrc curl ipset iptables python3 py3-maxminddb; then
+        echo -e "${ERROR} Alpine 依赖安装失败；请确认已启用 main/community 软件源"
+        return 1
     fi
-    
-    # 检查pip
-    echo -e "${INFO} 检查pip..."
-    if ! python3 -m pip --version &>/dev/null; then
-        echo -e "${WARNING} pip未安装，正在安装..."
-        if command -v apt-get &> /dev/null; then
-            apt-get install -y python3-pip
-        elif command -v yum &> /dev/null; then
-            yum install -y python3-pip
-        fi
-    fi
-    
-    # 检查Python maxminddb库
-    echo -e "${INFO} 检查Python maxminddb库..."
+
     if ! python3 -c "import maxminddb" 2>/dev/null; then
-        echo -e "${WARNING} 缺少Python库: maxminddb"
-        if [ -f /etc/alpine-release ]; then
-            echo -e "${ERROR} Alpine 请通过已核验的 apk Python 包安装 maxminddb；不使用 pip"
-            return 1
-        fi
-        echo -e "${INFO} 正在安装依赖..."
-        
-        # 先尝试用系统包管理器安装
-        if command -v apt-get &> /dev/null; then
-            if apt-cache search python3-maxminddb | grep -q python3-maxminddb; then
-                echo -e "${INFO} 通过apt安装maxminddb..."
-                apt-get install -y python3-maxminddb 2>/dev/null && echo -e "${SUCCESS} maxminddb库安装成功" && return 0 || true
-            fi
-            
-            # 否则安装编译依赖然后用pip
-            echo -e "${INFO} 安装编译依赖..."
-            apt-get install -y python3-dev build-essential 2>/dev/null || true
-        elif command -v yum &> /dev/null; then
-            echo -e "${INFO} 安装编译依赖..."
-            yum install -y python3-devel gcc 2>/dev/null || true
-        fi
-        
-        # 用pip安装，添加--break-system-packages标志（用于Debian系统）
-        echo -e "${INFO} 安装maxminddb库..."
-        python3 -m pip install --break-system-packages maxminddb 2>&1 | tail -5 && echo -e "${SUCCESS} maxminddb库安装成功" || echo -e "${WARNING} maxminddb库安装可能失败，请手动检查Python环境"
+        echo -e "${ERROR} Python maxminddb 模块不可用；请确认 Alpine community 软件源已启用"
+        return 1
     fi
-    
+
     echo -e "${SUCCESS} 依赖检查完成"
 }
 
@@ -374,11 +321,7 @@ generate_iptables_rules() {
 set -u
 SSH_ALLOW_RULES_FILE="/etc/ss-rust/mainland_cn_ssh_allow_rules"
 
-if [ -f /etc/alpine-release ]; then
-    SERVICE_DIR="/etc/init.d"
-else
-    SERVICE_DIR="/etc/systemd/system"
-fi
+SERVICE_DIR="/etc/init.d"
 
 record_ssh_allow_rule() {
     local firewall=$1 kind=$2 value=$3
@@ -568,14 +511,7 @@ install_ipset() {
     if ! command -v ipset &> /dev/null; then
         echo -e "${WARNING} ipset未安装，正在安装..."
 
-        if [ -f /etc/alpine-release ]; then
-            echo -e "${ERROR} Alpine ipset 包名尚未在目标系统核验"
-            return 1
-        elif command -v apt-get &> /dev/null; then
-            apt-get install -y ipset
-        elif command -v yum &> /dev/null; then
-            yum install -y ipset
-        fi
+        apk add --no-cache ipset || return 1
     fi
     
     echo -e "${SUCCESS} ipset检查完成"
@@ -587,11 +523,9 @@ install_ipset() {
 # 因此改为开机重跑一次规则脚本（会重建 ipset 并重新下规则）。
 install_boot_service() {
     echo -e "${INFO} 配置开机自动恢复..."
-
-    if [ -f /etc/alpine-release ]; then
-        local script_exec_path
-        script_exec_path=$(get_script_exec_path)
-        cat > "${BOOT_SERVICE_FILE}" << EOF
+    local script_exec_path
+    script_exec_path=$(get_script_exec_path)
+    cat > "${BOOT_SERVICE_FILE}" << EOF
 #!/sbin/openrc-run
 description="Restore mainland IP blocking rules"
 
@@ -612,34 +546,8 @@ stop() {
     eend \$?
 }
 EOF
-        chmod 755 "${BOOT_SERVICE_FILE}"
-        if rc-update add "${BOOT_SERVICE_NAME}" default >/dev/null 2>&1; then
-            echo -e "${SUCCESS} 已启用 OpenRC 开机自动恢复（${BOOT_SERVICE_NAME}）"
-        else
-            echo -e "${WARNING} OpenRC 开机自动恢复服务启用失败"
-        fi
-        return 0
-    fi
-
-    cat > "$BOOT_SERVICE_FILE" << EOF
-[Unit]
-Description=Block mainland China IPs for Shadowsocks
-After=network-online.target ss-rust.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/bash ${IPTABLES_RULES}
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    if systemctl enable "$BOOT_SERVICE_NAME" >/dev/null 2>&1; then
+    chmod 755 "${BOOT_SERVICE_FILE}"
+    if rc-update add "${BOOT_SERVICE_NAME}" default >/dev/null 2>&1; then
         echo -e "${SUCCESS} 已启用开机自动恢复（${BOOT_SERVICE_NAME}）"
     else
         echo -e "${WARNING} 开机自动恢复服务启用失败，重启后需手动执行: bash $IPTABLES_RULES"
@@ -649,14 +557,9 @@ EOF
 # 移除开机自动恢复服务
 remove_boot_service() {
     if [ -f "$BOOT_SERVICE_FILE" ]; then
-        if [ -f /etc/alpine-release ]; then
-            rc-service "$BOOT_SERVICE_NAME" stop >/dev/null 2>&1 || true
-            rc-update del "$BOOT_SERVICE_NAME" default >/dev/null 2>&1 || true
-        else
-            systemctl disable "$BOOT_SERVICE_NAME" >/dev/null 2>&1 || true
-        fi
+        rc-service "$BOOT_SERVICE_NAME" stop >/dev/null 2>&1 || true
+        rc-update del "$BOOT_SERVICE_NAME" default >/dev/null 2>&1 || true
         rm -f "$BOOT_SERVICE_FILE"
-        [ -f /etc/alpine-release ] || systemctl daemon-reload
     fi
 }
 
@@ -677,12 +580,6 @@ enable_blocking() {
         return 1
     fi
     
-    # 保存iptables规则（部分系统装了 netfilter-persistent 会用到；目录可能不存在）
-    if [ ! -f /etc/alpine-release ] && command -v iptables-save &> /dev/null; then
-        mkdir -p /etc/iptables 2>/dev/null || true
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-
     # 关键：重启后 ipset 会清空，必须靠开机服务重建
     install_boot_service
     
@@ -703,11 +600,6 @@ disable_blocking() {
     # 取消开机自动恢复，否则重启后又会被重新下上
     remove_boot_service
 
-    # 同步已保存的规则，避免 netfilter-persistent 在重启时恢复旧规则
-    if [ ! -f /etc/alpine-release ] && command -v iptables-save &> /dev/null && [ -f /etc/iptables/rules.v4 ]; then
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    fi
-    
     echo -e "${SUCCESS} 屏蔽规则已禁用"
 }
 
@@ -767,13 +659,7 @@ show_status() {
 
     echo ""
     echo -e "${BOLD}开机自动恢复:${PLAIN}"
-    if [ -f /etc/alpine-release ]; then
-        if [ -L "/etc/runlevels/default/${BOOT_SERVICE_NAME}" ]; then
-            echo -e "  ${GREEN}✓${PLAIN} 已启用 (${BOOT_SERVICE_NAME})"
-        else
-            echo -e "  ${RED}✗${PLAIN} 未启用 — 服务器重启后屏蔽规则将失效"
-        fi
-    elif [ -f "$BOOT_SERVICE_FILE" ] && systemctl is-enabled "$BOOT_SERVICE_NAME" >/dev/null 2>&1; then
+    if [ -L "/etc/runlevels/default/${BOOT_SERVICE_NAME}" ]; then
         echo -e "  ${GREEN}✓${PLAIN} 已启用 (${BOOT_SERVICE_NAME})"
     else
         echo -e "  ${RED}✗${PLAIN} 未启用 — 服务器重启后屏蔽规则将失效"
@@ -846,20 +732,8 @@ normalize_schedule_input() {
 
 # 尝试确保系统的cron服务可用
 ensure_cron_service() {
-    if [ -f /etc/alpine-release ]; then
-        rc-update add crond default >/dev/null 2>&1 || true
-        rc-service crond start >/dev/null 2>&1 || true
-        return 0
-    fi
-    if ! command -v systemctl >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if systemctl list-unit-files 2>/dev/null | grep -q '^cron.service'; then
-        systemctl enable --now cron >/dev/null 2>&1 || true
-    elif systemctl list-unit-files 2>/dev/null | grep -q '^crond.service'; then
-        systemctl enable --now crond >/dev/null 2>&1 || true
-    fi
+    rc-update add crond default >/dev/null 2>&1 || [ -L /etc/runlevels/default/crond ] || return 1
+    rc-service crond start >/dev/null 2>&1
 }
 
 remove_alpine_cron_block() {
@@ -929,24 +803,17 @@ enable_auto_update() {
         esac
     fi
 
-    ensure_cron_service
+    if ! ensure_cron_service; then
+        echo -e "${ERROR} 无法启用 OpenRC crond 服务，未写入定时任务"
+        return 1
+    fi
 
     local script_exec_path
     script_exec_path=$(get_script_exec_path)
 
     touch "$AUTO_UPDATE_LOG_FILE"
 
-    if [ -f /etc/alpine-release ]; then
-        write_alpine_cron_block "$cron_expr" "$script_exec_path"
-    else
-        cat > "$AUTO_UPDATE_CRON_FILE" << EOF
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-$cron_expr root PYTHONIOENCODING=UTF-8 LC_ALL=C.UTF-8 LANG=C.UTF-8 bash $script_exec_path update >> $AUTO_UPDATE_LOG_FILE 2>&1
-EOF
-
-        chmod 644 "$AUTO_UPDATE_CRON_FILE"
-    fi
+    write_alpine_cron_block "$cron_expr" "$script_exec_path"
 
     echo -e "${SUCCESS} 定时更新已开启"
     echo -e "${INFO} 更新频率: $cron_expr"
@@ -956,12 +823,8 @@ EOF
 # 关闭定时更新
 disable_auto_update() {
     if [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
-        if [ -f /etc/alpine-release ]; then
-            remove_alpine_cron_block
-            [ ! -s "$AUTO_UPDATE_CRON_FILE" ] && rm -f "$AUTO_UPDATE_CRON_FILE"
-        else
-            rm -f "$AUTO_UPDATE_CRON_FILE"
-        fi
+        remove_alpine_cron_block
+        [ ! -s "$AUTO_UPDATE_CRON_FILE" ] && rm -f "$AUTO_UPDATE_CRON_FILE"
         echo -e "${SUCCESS} 定时更新已关闭"
     else
         echo -e "${WARNING} 定时更新未启用"
@@ -975,14 +838,12 @@ show_auto_update_status() {
     echo -e "${BLUE}${BOLD}═══════════════════════════════════${PLAIN}"
 
     local cron_line=""
-    if [ -f /etc/alpine-release ] && [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
+    if [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
         cron_line=$(awk -v start="${CRON_BLOCK_START}" -v end="${CRON_BLOCK_END}" '
             $0 == start { inside = 1; next }
             $0 == end { inside = 0; next }
             inside && $0 !~ /^(#|SHELL=|PATH=|$)/ { print; exit }
         ' "$AUTO_UPDATE_CRON_FILE")
-    elif [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
-        cron_line=$(grep -vE '^(#|SHELL=|PATH=|$)' "$AUTO_UPDATE_CRON_FILE" | head -1)
     fi
 
     if [ -n "$cron_line" ]; then
@@ -1027,6 +888,7 @@ show_menu() {
 # 主函数
 main() {
     check_root
+    require_supported_alpine
     
     # 如果有参数，直接执行相应操作
     if [ $# -gt 0 ]; then
