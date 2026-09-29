@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "此脚本需要 Bash；Alpine 请先运行 apk add bash curl，然后使用 bash 启动脚本。" >&2
+    exit 1
+fi
+
 set -e
 
 # =========================================
@@ -24,12 +29,22 @@ MAINLAND_IP_FILE="${IPLIST_DIR}/mainland_cn.txt"
 MMDB_FILE="${IPLIST_DIR}/Country.mmdb"
 IPTABLES_RULES="/etc/ss-rust/mainland_cn_rules.sh"
 EXTRACT_SCRIPT="$(cd "$(dirname "$0")"; pwd)/extract-cn-ip-from-mmdb.py"
-AUTO_UPDATE_CRON_FILE="/etc/cron.d/block-mainland-auto-update"
-BOOT_SERVICE_NAME="block-mainland.service"
-BOOT_SERVICE_FILE="/etc/systemd/system/block-mainland.service"
+if [ -f /etc/alpine-release ]; then
+    SERVICE_DIR="/etc/init.d"
+    BOOT_SERVICE_NAME="block-mainland"
+    BOOT_SERVICE_FILE="${SERVICE_DIR}/${BOOT_SERVICE_NAME}"
+    AUTO_UPDATE_CRON_FILE="/etc/crontabs/root"
+else
+    SERVICE_DIR="/etc/systemd/system"
+    BOOT_SERVICE_NAME="block-mainland.service"
+    BOOT_SERVICE_FILE="${SERVICE_DIR}/${BOOT_SERVICE_NAME}"
+    AUTO_UPDATE_CRON_FILE="/etc/cron.d/block-mainland-auto-update"
+fi
 AUTO_UPDATE_LOG_FILE="/var/log/block-mainland-update.log"
 DAILY_CRON_EXPR="30 4 * * *"
 WEEKLY_CRON_EXPR="30 4 * * 1"
+CRON_BLOCK_START="# BEGIN block-mainland-auto-update"
+CRON_BLOCK_END="# END block-mainland-auto-update"
 
 # 颜色定义
 readonly RED='\033[0;31m'
@@ -70,8 +85,11 @@ check_dependencies() {
     if [ ${#missing_deps[@]} -gt 0 ]; then
         echo -e "${WARNING} 缺少依赖: ${missing_deps[*]}"
         echo -e "${INFO} 正在安装依赖..."
-        
-        if command -v apt-get &> /dev/null; then
+
+        if [ -f /etc/alpine-release ]; then
+            echo -e "${ERROR} Alpine 依赖包名需先在目标系统核验，当前缺少: ${missing_deps[*]}"
+            return 1
+        elif command -v apt-get &> /dev/null; then
             apt-get update
             apt-get install -y "${missing_deps[@]}"
         elif command -v yum &> /dev/null; then
@@ -97,6 +115,10 @@ check_dependencies() {
     echo -e "${INFO} 检查Python maxminddb库..."
     if ! python3 -c "import maxminddb" 2>/dev/null; then
         echo -e "${WARNING} 缺少Python库: maxminddb"
+        if [ -f /etc/alpine-release ]; then
+            echo -e "${ERROR} Alpine 请通过已核验的 apk Python 包安装 maxminddb；不使用 pip"
+            return 1
+        fi
         echo -e "${INFO} 正在安装依赖..."
         
         # 先尝试用系统包管理器安装
@@ -285,7 +307,7 @@ collect_protected_ports() {
         [[ "$p" =~ ^[0-9]+$ ]] && ports+=("$p")
     done
 
-    for svc in /etc/systemd/system/shadowtls-*.service; do
+    for svc in "${SERVICE_DIR}"/shadowtls-*; do
         [ -f "$svc" ] || continue
         p=$(grep -oE -- '--listen [^ ]+' "$svc" 2>/dev/null | head -1 | sed 's/.*://')
         [[ "$p" =~ ^[0-9]+$ ]] && ports+=("$p")
@@ -306,6 +328,23 @@ flush_mainland_rules() {
         iptables -D INPUT ${rule#-A INPUT } 2>/dev/null || break
         guard=$((guard + 1))
     done
+}
+
+cleanup_ssh_allow_rules() {
+    local firewall kind value
+    local rules_file="${INSTALL_DIR}/mainland_cn_ssh_allow_rules"
+    [ -f "${rules_file}" ] || return 0
+    while IFS='|' read -r firewall kind value; do
+        case "${firewall}:${kind}" in
+            iptables:port|ip6tables:port)
+                "${firewall}" -D INPUT -p tcp --dport "${value}" -j ACCEPT 2>/dev/null || true
+                ;;
+            iptables:source|ip6tables:source)
+                "${firewall}" -D INPUT -s "${value}" -j ACCEPT 2>/dev/null || true
+                ;;
+        esac
+    done < "${rules_file}"
+    rm -f "${rules_file}"
 }
 
 # 生成iptables规则
@@ -333,6 +372,74 @@ generate_iptables_rules() {
 # 自动生成，请勿手动修改
 
 set -u
+SSH_ALLOW_RULES_FILE="/etc/ss-rust/mainland_cn_ssh_allow_rules"
+
+if [ -f /etc/alpine-release ]; then
+    SERVICE_DIR="/etc/init.d"
+else
+    SERVICE_DIR="/etc/systemd/system"
+fi
+
+record_ssh_allow_rule() {
+    local firewall=$1 kind=$2 value=$3
+    if [ "$kind" = "port" ]; then
+        "$firewall" -I INPUT 1 -p tcp --dport "$value" -j ACCEPT || return 1
+        printf '%s|port|%s\n' "$firewall" "$value" >> "$SSH_ALLOW_RULES_FILE"
+    elif [ "$kind" = "source" ]; then
+        "$firewall" -I INPUT 1 -s "$value" -j ACCEPT || return 1
+        printf '%s|source|%s\n' "$firewall" "$value" >> "$SSH_ALLOW_RULES_FILE"
+    fi
+}
+
+cleanup_ssh_allow_rules() {
+    local firewall kind value
+    [ -f "$SSH_ALLOW_RULES_FILE" ] || return 0
+    while IFS='|' read -r firewall kind value; do
+        case "${firewall}:${kind}" in
+            iptables:port|ip6tables:port)
+                "$firewall" -D INPUT -p tcp --dport "$value" -j ACCEPT 2>/dev/null || true
+                ;;
+            iptables:source|ip6tables:source)
+                "$firewall" -D INPUT -s "$value" -j ACCEPT 2>/dev/null || true
+                ;;
+        esac
+    done < "$SSH_ALLOW_RULES_FILE"
+    rm -f "$SSH_ALLOW_RULES_FILE"
+}
+
+allow_ssh_access() {
+    local ssh_ports source_ip firewall ssh_port
+    ssh_ports=$( {
+        command -v sshd >/dev/null 2>&1 && sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }'
+        [ -f /etc/ssh/sshd_config ] && awk 'tolower($1) == "port" && $2 ~ /^[0-9]+$/ { print $2 }' /etc/ssh/sshd_config
+    } | awk '$1 ~ /^[0-9]+$/ && $1 >= 1 && $1 <= 65535' | sort -un)
+    [ -n "$ssh_ports" ] || ssh_ports=22
+
+    local ssh_connection=${SSH_CONNECTION:-}
+    source_ip=${ssh_connection%% *}
+    [ "$source_ip" = "$ssh_connection" ] && source_ip=
+    if [ -z "$source_ip" ] && [ -n "${SSH_CLIENT:-}" ]; then
+        source_ip=${SSH_CLIENT%% *}
+    fi
+
+    : >> "$SSH_ALLOW_RULES_FILE"
+    for firewall in iptables ip6tables; do
+        command -v "$firewall" >/dev/null 2>&1 || continue
+        for ssh_port in $ssh_ports; do
+            record_ssh_allow_rule "$firewall" port "$ssh_port" || true
+        done
+    done
+
+    if [ -n "$source_ip" ]; then
+        case "$source_ip" in
+            *:*) firewall=ip6tables ;;
+            *) firewall=iptables ;;
+        esac
+        if command -v "$firewall" >/dev/null 2>&1; then
+            record_ssh_allow_rule "$firewall" source "$source_ip" || true
+        fi
+    fi
+}
 
 # 运行时探测所有需要保护的端口：主节点 + 多端口节点 + ShadowTLS 入口
 collect_ports() {
@@ -349,7 +456,7 @@ collect_ports() {
         [ -n "${p:-}" ] && ports+=("$p")
     done
 
-    for svc in /etc/systemd/system/shadowtls-*.service; do
+    for svc in "${SERVICE_DIR}"/shadowtls-*; do
         [ -f "$svc" ] || continue
         p=$(grep -oE -- '--listen [^ ]+' "$svc" 2>/dev/null | head -1 | sed 's/.*://')
         case "${p:-}" in
@@ -371,6 +478,7 @@ while [ $guard -lt 100 ]; do
     iptables -D INPUT ${rule#-A INPUT } 2>/dev/null || break
     guard=$((guard + 1))
 done
+cleanup_ssh_allow_rules
 ipset destroy mainland_cn_src 2>/dev/null || true
 
 echo "[信息] 创建ipset集合..."
@@ -380,10 +488,14 @@ echo "[信息] 导入IP列表..."
 /usr/local/bin/block-mainland-import-ips.sh
 
 echo "[信息] 应用iptables规则..."
+allow_ssh_access
+rule_position=$(awk -F'|' '$1 == "iptables" { count++ } END { print count + 1 }' "$SSH_ALLOW_RULES_FILE")
 for port in $(collect_ports); do
     echo "[信息]   屏蔽端口 ${port}"
-    iptables -I INPUT -p tcp --dport "$port" -m set --match-set mainland_cn_src src -j DROP
-    iptables -I INPUT -p udp --dport "$port" -m set --match-set mainland_cn_src src -j DROP
+    iptables -I INPUT "$rule_position" -p tcp --dport "$port" -m set --match-set mainland_cn_src src -j DROP
+    rule_position=$((rule_position + 1))
+    iptables -I INPUT "$rule_position" -p udp --dport "$port" -m set --match-set mainland_cn_src src -j DROP
+    rule_position=$((rule_position + 1))
 done
 
 echo "[成功] 规则应用完成"
@@ -455,8 +567,11 @@ install_ipset() {
     
     if ! command -v ipset &> /dev/null; then
         echo -e "${WARNING} ipset未安装，正在安装..."
-        
-        if command -v apt-get &> /dev/null; then
+
+        if [ -f /etc/alpine-release ]; then
+            echo -e "${ERROR} Alpine ipset 包名尚未在目标系统核验"
+            return 1
+        elif command -v apt-get &> /dev/null; then
             apt-get install -y ipset
         elif command -v yum &> /dev/null; then
             yum install -y ipset
@@ -472,6 +587,39 @@ install_ipset() {
 # 因此改为开机重跑一次规则脚本（会重建 ipset 并重新下规则）。
 install_boot_service() {
     echo -e "${INFO} 配置开机自动恢复..."
+
+    if [ -f /etc/alpine-release ]; then
+        local script_exec_path
+        script_exec_path=$(get_script_exec_path)
+        cat > "${BOOT_SERVICE_FILE}" << EOF
+#!/sbin/openrc-run
+description="Restore mainland IP blocking rules"
+
+depend() {
+    need net
+    after ss-rust
+}
+
+start() {
+    ebegin "Restoring mainland IP blocking rules"
+    /bin/bash "${IPTABLES_RULES}"
+    eend \$?
+}
+
+stop() {
+    ebegin "Removing mainland IP blocking rules"
+    /bin/bash "${script_exec_path}" disable-rules
+    eend \$?
+}
+EOF
+        chmod 755 "${BOOT_SERVICE_FILE}"
+        if rc-update add "${BOOT_SERVICE_NAME}" default >/dev/null 2>&1; then
+            echo -e "${SUCCESS} 已启用 OpenRC 开机自动恢复（${BOOT_SERVICE_NAME}）"
+        else
+            echo -e "${WARNING} OpenRC 开机自动恢复服务启用失败"
+        fi
+        return 0
+    fi
 
     cat > "$BOOT_SERVICE_FILE" << EOF
 [Unit]
@@ -501,9 +649,14 @@ EOF
 # 移除开机自动恢复服务
 remove_boot_service() {
     if [ -f "$BOOT_SERVICE_FILE" ]; then
-        systemctl disable "$BOOT_SERVICE_NAME" >/dev/null 2>&1 || true
+        if [ -f /etc/alpine-release ]; then
+            rc-service "$BOOT_SERVICE_NAME" stop >/dev/null 2>&1 || true
+            rc-update del "$BOOT_SERVICE_NAME" default >/dev/null 2>&1 || true
+        else
+            systemctl disable "$BOOT_SERVICE_NAME" >/dev/null 2>&1 || true
+        fi
         rm -f "$BOOT_SERVICE_FILE"
-        systemctl daemon-reload
+        [ -f /etc/alpine-release ] || systemctl daemon-reload
     fi
 }
 
@@ -525,7 +678,7 @@ enable_blocking() {
     fi
     
     # 保存iptables规则（部分系统装了 netfilter-persistent 会用到；目录可能不存在）
-    if command -v iptables-save &> /dev/null; then
+    if [ ! -f /etc/alpine-release ] && command -v iptables-save &> /dev/null; then
         mkdir -p /etc/iptables 2>/dev/null || true
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
@@ -542,6 +695,7 @@ disable_blocking() {
 
     # 删除所有引用 mainland_cn_src 的规则（不依赖当前端口，改过端口的旧规则也能清掉）
     flush_mainland_rules
+    cleanup_ssh_allow_rules
     
     # 删除ipset
     ipset destroy mainland_cn_src 2>/dev/null || true
@@ -550,7 +704,7 @@ disable_blocking() {
     remove_boot_service
 
     # 同步已保存的规则，避免 netfilter-persistent 在重启时恢复旧规则
-    if command -v iptables-save &> /dev/null && [ -f /etc/iptables/rules.v4 ]; then
+    if [ ! -f /etc/alpine-release ] && command -v iptables-save &> /dev/null && [ -f /etc/iptables/rules.v4 ]; then
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
     fi
     
@@ -613,7 +767,13 @@ show_status() {
 
     echo ""
     echo -e "${BOLD}开机自动恢复:${PLAIN}"
-    if [ -f "$BOOT_SERVICE_FILE" ] && systemctl is-enabled "$BOOT_SERVICE_NAME" >/dev/null 2>&1; then
+    if [ -f /etc/alpine-release ]; then
+        if [ -L "/etc/runlevels/default/${BOOT_SERVICE_NAME}" ]; then
+            echo -e "  ${GREEN}✓${PLAIN} 已启用 (${BOOT_SERVICE_NAME})"
+        else
+            echo -e "  ${RED}✗${PLAIN} 未启用 — 服务器重启后屏蔽规则将失效"
+        fi
+    elif [ -f "$BOOT_SERVICE_FILE" ] && systemctl is-enabled "$BOOT_SERVICE_NAME" >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓${PLAIN} 已启用 (${BOOT_SERVICE_NAME})"
     else
         echo -e "  ${RED}✗${PLAIN} 未启用 — 服务器重启后屏蔽规则将失效"
@@ -686,6 +846,11 @@ normalize_schedule_input() {
 
 # 尝试确保系统的cron服务可用
 ensure_cron_service() {
+    if [ -f /etc/alpine-release ]; then
+        rc-update add crond default >/dev/null 2>&1 || true
+        rc-service crond start >/dev/null 2>&1 || true
+        return 0
+    fi
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
@@ -695,6 +860,31 @@ ensure_cron_service() {
     elif systemctl list-unit-files 2>/dev/null | grep -q '^crond.service'; then
         systemctl enable --now crond >/dev/null 2>&1 || true
     fi
+}
+
+remove_alpine_cron_block() {
+    [ -f "${AUTO_UPDATE_CRON_FILE}" ] || return 0
+    local tmp_file
+    tmp_file=$(mktemp)
+    awk -v start="${CRON_BLOCK_START}" -v end="${CRON_BLOCK_END}" '
+        $0 == start { skip = 1; next }
+        $0 == end { skip = 0; next }
+        !skip { print }
+    ' "${AUTO_UPDATE_CRON_FILE}" > "${tmp_file}"
+    mv "${tmp_file}" "${AUTO_UPDATE_CRON_FILE}"
+}
+
+write_alpine_cron_block() {
+    local cron_expr=$1 script_exec_path=$2
+    remove_alpine_cron_block
+    {
+        echo "${CRON_BLOCK_START}"
+        echo "SHELL=/bin/bash"
+        echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        echo "${cron_expr} PYTHONIOENCODING=UTF-8 LC_ALL=C.UTF-8 LANG=C.UTF-8 /bin/bash ${script_exec_path} update >> ${AUTO_UPDATE_LOG_FILE} 2>&1"
+        echo "${CRON_BLOCK_END}"
+    } >> "${AUTO_UPDATE_CRON_FILE}"
+    chmod 600 "${AUTO_UPDATE_CRON_FILE}"
 }
 
 # 开启定时更新
@@ -746,13 +936,17 @@ enable_auto_update() {
 
     touch "$AUTO_UPDATE_LOG_FILE"
 
-    cat > "$AUTO_UPDATE_CRON_FILE" << EOF
+    if [ -f /etc/alpine-release ]; then
+        write_alpine_cron_block "$cron_expr" "$script_exec_path"
+    else
+        cat > "$AUTO_UPDATE_CRON_FILE" << EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 $cron_expr root PYTHONIOENCODING=UTF-8 LC_ALL=C.UTF-8 LANG=C.UTF-8 bash $script_exec_path update >> $AUTO_UPDATE_LOG_FILE 2>&1
 EOF
 
-    chmod 644 "$AUTO_UPDATE_CRON_FILE"
+        chmod 644 "$AUTO_UPDATE_CRON_FILE"
+    fi
 
     echo -e "${SUCCESS} 定时更新已开启"
     echo -e "${INFO} 更新频率: $cron_expr"
@@ -762,7 +956,12 @@ EOF
 # 关闭定时更新
 disable_auto_update() {
     if [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
-        rm -f "$AUTO_UPDATE_CRON_FILE"
+        if [ -f /etc/alpine-release ]; then
+            remove_alpine_cron_block
+            [ ! -s "$AUTO_UPDATE_CRON_FILE" ] && rm -f "$AUTO_UPDATE_CRON_FILE"
+        else
+            rm -f "$AUTO_UPDATE_CRON_FILE"
+        fi
         echo -e "${SUCCESS} 定时更新已关闭"
     else
         echo -e "${WARNING} 定时更新未启用"
@@ -775,9 +974,18 @@ show_auto_update_status() {
     echo -e "${BLUE}${BOLD}      定时更新任务状态${PLAIN}"
     echo -e "${BLUE}${BOLD}═══════════════════════════════════${PLAIN}"
 
-    if [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
-        local cron_line
+    local cron_line=""
+    if [ -f /etc/alpine-release ] && [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
+        cron_line=$(awk -v start="${CRON_BLOCK_START}" -v end="${CRON_BLOCK_END}" '
+            $0 == start { inside = 1; next }
+            $0 == end { inside = 0; next }
+            inside && $0 !~ /^(#|SHELL=|PATH=|$)/ { print; exit }
+        ' "$AUTO_UPDATE_CRON_FILE")
+    elif [ -f "$AUTO_UPDATE_CRON_FILE" ]; then
         cron_line=$(grep -vE '^(#|SHELL=|PATH=|$)' "$AUTO_UPDATE_CRON_FILE" | head -1)
+    fi
+
+    if [ -n "$cron_line" ]; then
         local cron_expr
         cron_expr=$(echo "$cron_line" | awk '{print $1" "$2" "$3" "$4" "$5}')
 
@@ -823,6 +1031,15 @@ main() {
     # 如果有参数，直接执行相应操作
     if [ $# -gt 0 ]; then
         case "$1" in
+            enable-rules)
+                [ -f "$IPTABLES_RULES" ] || exit 1
+                bash "$IPTABLES_RULES"
+                ;;
+            disable-rules)
+                flush_mainland_rules
+                cleanup_ssh_allow_rules
+                ipset destroy mainland_cn_src 2>/dev/null || true
+                ;;
             enable)
                 check_dependencies
                 create_directories

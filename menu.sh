@@ -1,4 +1,9 @@
 #!/bin/bash
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "此脚本需要 Bash；Alpine 请先运行 apk add bash curl，然后使用 bash 启动脚本。" >&2
+    exit 1
+fi
+
 # =========================================
 # 作者: jinqians
 # 日期: 2026年7月
@@ -14,14 +19,65 @@ CYAN='\033[0;36m'
 RESET='\033[0m'
 
 # 当前版本号
-current_version="4.4"
+current_version="4.5"
 
-# systemd 服务目录
-SYSTEMD_DIR="/etc/systemd/system"
+REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main}"
+if [ -f /etc/alpine-release ]; then
+    SERVICE_DIR="/etc/init.d"
+else
+    SERVICE_DIR="/etc/systemd/system"
+fi
+SYSTEMD_DIR="${SERVICE_DIR}"
+
+service_is_openrc() {
+    [ -f /etc/alpine-release ]
+}
+
+service_path() {
+    if service_is_openrc; then echo "${SERVICE_DIR}/$1"; else echo "${SERVICE_DIR}/$1.service"; fi
+}
+
+service_name_from_path() {
+    local name
+    name=$(basename "$1")
+    echo "${name%.service}"
+}
+
+service_start() {
+    if service_is_openrc; then rc-service "$1" start; else systemctl start "$1"; fi
+}
+
+service_stop() {
+    if service_is_openrc; then rc-service "$1" stop; else systemctl stop "$1"; fi
+}
+
+service_restart() {
+    if service_is_openrc; then
+        if rc-service "$1" status >/dev/null 2>&1; then rc-service "$1" restart; else rc-service "$1" start; fi
+    else
+        systemctl restart "$1"
+    fi
+}
+
+service_active() {
+    if service_is_openrc; then rc-service "$1" status >/dev/null 2>&1; else systemctl is-active "$1" >/dev/null 2>&1; fi
+}
+
+service_enable() {
+    if service_is_openrc; then rc-update add "$1" default; else systemctl enable "$1"; fi
+}
+
+service_disable() {
+    if service_is_openrc; then rc-update del "$1" default; else systemctl disable "$1"; fi
+}
+
+service_reload() {
+    service_is_openrc || systemctl daemon-reload
+}
 
 # 中国大陆屏蔽脚本仓库地址
-MAINLAND_BLOCK_URL="https://raw.githubusercontent.com/jinqians/ss-2022.sh/refs/heads/main/block-mainland.sh"
-MAINLAND_EXTRACT_URL="https://raw.githubusercontent.com/jinqians/ss-2022.sh/refs/heads/main/extract-cn-ip-from-mmdb.py"
+MAINLAND_BLOCK_URL="${REPO_RAW_BASE}/block-mainland.sh"
+MAINLAND_EXTRACT_URL="${REPO_RAW_BASE}/extract-cn-ip-from-mmdb.py"
 MAINLAND_SCRIPT_DIR="/usr/local/share/ss-2022"
 
 # 安装全局命令
@@ -29,7 +85,7 @@ install_global_command() {
     echo -e "${CYAN}正在安装全局命令...${RESET}"
     
     # 下载脚本到 /usr/local/bin
-    curl -L -s menu.jinqians.com -o "/usr/local/bin/menu.sh"
+    curl -fsSL "${REPO_RAW_BASE}/menu.sh" -o "/usr/local/bin/menu.sh"
     chmod +x "/usr/local/bin/menu.sh"
     
     # 创建软链接
@@ -43,7 +99,8 @@ install_global_command() {
 
 # 检查并安装依赖
 check_dependencies() {
-    local deps=("bc")
+    local deps=()
+    service_is_openrc || deps=("bc")
     local need_update=false
     
     echo -e "${CYAN}正在检查依赖...${RESET}"
@@ -57,7 +114,9 @@ check_dependencies() {
     done
     
     if [ "$need_update" = true ]; then
-        if [ -x "$(command -v apt)" ]; then
+        if service_is_openrc; then
+            echo -e "${YELLOW}Alpine 状态统计使用 OpenRC 原生状态，不需要 bc${RESET}"
+        elif [ -x "$(command -v apt)" ]; then
             apt update
             for dep in "${deps[@]}"; do
                 if ! command -v "$dep" &> /dev/null; then
@@ -113,6 +172,45 @@ check_root() {
 
 # 检查服务状态并显示
 check_and_show_status() {
+    if service_is_openrc; then
+        echo -e "\n${CYAN}=== 服务状态检查 (OpenRC) ===${RESET}"
+        echo -e "${YELLOW}Snell / PSM / VLESS Reality 外部集成在 Alpine 暂不支持${RESET}"
+        if [ -x /usr/local/bin/ss-rust ]; then
+            if service_active ss-rust; then
+                echo -e "${GREEN}SS-2022 已安装且运行中${RESET}"
+            else
+                echo -e "${YELLOW}SS-2022 已安装但未运行${RESET}"
+            fi
+            if [ -d /etc/ss-rust/ports ]; then
+                local node_file node_port
+                for node_file in /etc/ss-rust/ports/*.json; do
+                    [ -f "${node_file}" ] || continue
+                    node_port=$(jq -r '.server_port' "${node_file}" 2>/dev/null)
+                    if service_active "ss-rust-${node_port}"; then
+                        echo -e "${GREEN}SS-2022 端口 ${node_port} 运行中${RESET}"
+                    else
+                        echo -e "${YELLOW}SS-2022 端口 ${node_port} 未运行${RESET}"
+                    fi
+                done
+            fi
+        else
+            echo -e "${YELLOW}SS-2022 未安装${RESET}"
+        fi
+        local service_file service_name
+        for service_file in "${SERVICE_DIR}"/shadowtls-*; do
+            [ -f "${service_file}" ] || continue
+            case "$(basename "${service_file}")" in shadowtls-snell-*) continue ;; esac
+            service_name=$(service_name_from_path "${service_file}")
+            if service_active "${service_name}"; then
+                echo -e "${GREEN}${service_name} 运行中${RESET}"
+            else
+                echo -e "${YELLOW}${service_name} 未运行${RESET}"
+            fi
+        done
+        echo -e "${CYAN}====================${RESET}\n"
+        return 0
+    fi
+
     # 获取 CPU 核心数
     local cpu_cores=$(nproc)
     
@@ -243,7 +341,7 @@ update_script() {
     TMP_SCRIPT=$(mktemp)
     
     # 下载最新版本
-    if curl -sL https://raw.githubusercontent.com/jinqians/menu/main/menu.sh -o "$TMP_SCRIPT"; then
+    if curl -fsSL "${REPO_RAW_BASE}/menu.sh" -o "$TMP_SCRIPT"; then
         # 获取新版本号
         new_version=$(grep "current_version=" "$TMP_SCRIPT" | cut -d'"' -f2)
         
@@ -291,12 +389,16 @@ update_script() {
 
 # 安装/管理 Snell
 manage_snell() {
+    if service_is_openrc; then
+        echo -e "${YELLOW}Snell 安装/管理依赖仓库外的 systemd 脚本，Alpine 暂不支持。${RESET}"
+        return 0
+    fi
     bash <(curl -sL https://raw.githubusercontent.com/jinqians/snell.sh/main/snell.sh)
 }
 
 # 安装/管理 SS-2022
 manage_ss_rust() {
-    bash <(curl -sL https://raw.githubusercontent.com/jinqians/ss-2022.sh/main/ss-2022.sh)
+    bash <(curl -sL "${REPO_RAW_BASE}/ss-2022.sh")
 }
 
 # 管理中国大陆IP屏蔽
@@ -321,11 +423,15 @@ manage_mainland_block() {
 
 # 安装/管理 ShadowTLS
 manage_shadowtls() {
-    bash <(curl -sL https://raw.githubusercontent.com/jinqians/snell.sh/main/shadowtls.sh)
+    bash <(curl -sL "${REPO_RAW_BASE}/shadowtls.sh")
 }
 
 # 安装/管理 VLESS Reality（已整合到 PSM）
 manage_vless() {
+    if service_is_openrc; then
+        echo -e "${YELLOW}VLESS Reality/PSM 来自仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
+        return 0
+    fi
     echo -e "${CYAN}VLESS Reality 的安装管理已由 PSM（Proxy Stack Manager）提供，正在启动 PSM...${RESET}"
     if ! bash <(curl -fsSL https://psm.jinqians.com); then
         echo -e "${RED}PSM 启动失败，请检查网络后重试，或手动执行：bash <(curl -fsSL https://psm.jinqians.com)${RESET}"
@@ -333,6 +439,7 @@ manage_vless() {
     fi
 }
 save_nftables_rules() {
+    service_is_openrc && return
     if ! command -v nft >/dev/null 2>&1; then
         return
     fi
@@ -348,6 +455,8 @@ save_nftables_rules() {
 
 close_nftables_port() {
     local port=$1
+
+    service_is_openrc && return
 
     if ! command -v nft >/dev/null 2>&1; then
         return
@@ -378,6 +487,23 @@ close_nftables_port() {
 close_port() {
     local port=$1
 
+    if service_is_openrc; then
+        local ports_file="/etc/ss-rust/firewall-ports"
+        if [ -f "/etc/ss-rust/firewall-chain-managed" ] && [ -f "${ports_file}" ]; then
+            iptables -D SS2022_ALLOW -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
+            iptables -D SS2022_ALLOW -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
+            local tmp_file="${ports_file}.tmp"
+            grep -vxF "$port" "$ports_file" > "$tmp_file" || true
+            mv "$tmp_file" "$ports_file"
+            if [ ! -s "$ports_file" ]; then
+                rc-service ss-rust-firewall stop >/dev/null 2>&1 || true
+                rc-update del ss-rust-firewall default >/dev/null 2>&1 || true
+                rm -f "$ports_file" "/etc/ss-rust/firewall-chain-managed" /etc/init.d/ss-rust-firewall
+            fi
+        fi
+        return 0
+    fi
+
     if command -v ufw >/dev/null 2>&1; then
         ufw delete allow "$port"/tcp >/dev/null 2>&1 || true
         ufw delete allow "$port"/udp >/dev/null 2>&1 || true
@@ -396,6 +522,10 @@ close_port() {
 
 # 卸载 Snell
 uninstall_snell() {
+    if service_is_openrc; then
+        echo -e "${YELLOW}Snell 卸载依赖仓库外的 systemd 配置，Alpine 暂不支持。${RESET}"
+        return 0
+    fi
     echo -e "${CYAN}正在卸载 Snell${RESET}"
 
     # 停止并删除依赖 Snell 后端的 ShadowTLS 服务，避免留下无后端的监听服务
@@ -475,22 +605,24 @@ uninstall_ss_rust() {
     fi
 
     # 停止并禁用主服务
-    systemctl stop ss-rust 2>/dev/null
-    systemctl disable ss-rust 2>/dev/null
-    rm -f "${SYSTEMD_DIR}/ss-rust.service"
+    service_stop ss-rust 2>/dev/null || true
+    service_disable ss-rust 2>/dev/null || true
+    rm -f "$(service_path ss-rust)"
     if [ -n "$main_port" ]; then
         close_port "$main_port"
     fi
 
     # 清理多端口节点服务
     local extra_service
-    for extra_service in "${SYSTEMD_DIR}"/ss-rust-*.service; do
+    for extra_service in "${SERVICE_DIR}"/ss-rust-*; do
         [ -f "$extra_service" ] || continue
-        local svc_name=$(basename "$extra_service" .service)
+        local svc_name
+        svc_name=$(service_name_from_path "$extra_service")
         local extra_port="${svc_name#ss-rust-}"
+        case "$extra_port" in ''|*[!0-9]*) continue ;; esac
         echo -e "${YELLOW}正在停止多端口服务 (端口: ${extra_port})${RESET}"
-        systemctl stop "$svc_name" 2>/dev/null
-        systemctl disable "$svc_name" 2>/dev/null
+        service_stop "$svc_name" 2>/dev/null || true
+        service_disable "$svc_name" 2>/dev/null || true
         rm -f "$extra_service"
         case "$extra_port" in
             ''|*[!0-9]*) ;;
@@ -498,12 +630,19 @@ uninstall_ss_rust() {
         esac
     done
 
+    if service_is_openrc && [ -f /etc/ss-rust/firewall-ports ]; then
+        while IFS= read -r extra_port; do
+            case "$extra_port" in ''|*[!0-9]*) continue ;; esac
+            close_port "$extra_port"
+        done < /etc/ss-rust/firewall-ports
+    fi
+
     # 删除二进制文件和配置目录
     rm -f "/usr/local/bin/ss-rust"
     rm -rf "/etc/ss-rust"
 
     # 重新加载 systemd
-    systemctl daemon-reload
+    service_reload
 
     echo -e "${GREEN}SS-2022 卸载完成！${RESET}"
 }
@@ -514,14 +653,15 @@ uninstall_shadowtls() {
 
     # 直接遍历 service 文件：systemctl list-units 只列出已加载的 unit，
     # 已停止（未加载）的 ShadowTLS 服务会被漏掉，导致卸载不干净
-    local service_file service listen_port
-    for service_file in "${SYSTEMD_DIR}"/shadowtls-*.service; do
+    local service_file service listen_addr listen_port
+    for service_file in "${SERVICE_DIR}"/shadowtls-*; do
         [ -f "$service_file" ] || continue
-        service=$(basename "$service_file")
-        listen_port=$(sed -n 's/.*--listen .*:\([0-9][0-9]*\).*/\1/p' "$service_file" | head -n 1)
+        service=$(service_name_from_path "$service_file")
+        listen_addr=$(grep -oE -- '--listen [^ ]+' "$service_file" | head -1)
+        listen_port=${listen_addr##*:}
         echo -e "${YELLOW}正在移除 ${service}${RESET}"
-        systemctl stop "$service" 2>/dev/null
-        systemctl disable "$service" 2>/dev/null
+        service_stop "$service" 2>/dev/null || true
+        service_disable "$service" 2>/dev/null || true
         rm -f "$service_file"
         if [ -n "$listen_port" ]; then
             close_port "$listen_port"
@@ -532,7 +672,7 @@ uninstall_shadowtls() {
     rm -f "/usr/local/bin/shadow-tls"
     
     # 重新加载 systemd
-    systemctl daemon-reload
+    service_reload
     
     echo -e "${GREEN}ShadowTLS 卸载完成！${RESET}"
 }
@@ -609,16 +749,20 @@ while true; do
             update_script
             ;;
         9)
-            echo -e "\n${YELLOW}=== 流量管理 ===${RESET}"
-            echo -e "本脚本内置的流量管理功能尚不完善，推荐使用 ${GREEN}PSM（Proxy Stack Manager）${RESET} 进行流量管理。"
-            echo -e "\nPSM 支持 Snell / SS2022 / Xray 等协议的统一流量限额管理，功能包括："
-            echo -e "  • 设置月度流量上限（GB）及自动重置日"
-            echo -e "  • 超限自动暂停节点，恢复后自动解封"
-            echo -e "  • iptables 精确计数，数据持久化保存"
-            echo -e "\n安装 PSM："
-            echo -e "  ${CYAN}bash <(curl -fsSL https://psm.jinqians.com)${RESET}"
-            echo -e "\n进入 PSM 后选择：${GREEN}15. 流量管理${RESET} 即可添加 SS2022 节点并配置限额。"
-            read -p "按任意键继续..."
+            if service_is_openrc; then
+                echo -e "${YELLOW}PSM 流量管理依赖仓库外的 systemd 项目，Alpine 暂不支持。${RESET}"
+            else
+                echo -e "\n${YELLOW}=== 流量管理 ===${RESET}"
+                echo -e "本脚本内置的流量管理功能尚不完善，推荐使用 ${GREEN}PSM（Proxy Stack Manager）${RESET} 进行流量管理。"
+                echo -e "\nPSM 支持 Snell / SS2022 / Xray 等协议的统一流量限额管理，功能包括："
+                echo -e "  • 设置月度流量上限（GB）及自动重置日"
+                echo -e "  • 超限自动暂停节点，恢复后自动解封"
+                echo -e "  • iptables 精确计数，数据持久化保存"
+                echo -e "\n安装 PSM："
+                echo -e "  ${CYAN}bash <(curl -fsSL https://psm.jinqians.com)${RESET}"
+                echo -e "\n进入 PSM 后选择：${GREEN}15. 流量管理${RESET} 即可添加 SS2022 节点并配置限额。"
+                read -p "按任意键继续..."
+            fi
             ;;
         10)
             if ! manage_mainland_block; then
