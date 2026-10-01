@@ -27,14 +27,14 @@ REPO_RAW_BASE="${REPO_RAW_BASE:-https://raw.githubusercontent.com/Cupidzp/ss-202
 
 require_supported_alpine() {
     local os_id os_version
-    [ -f /etc/os-release ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    [ -f /etc/os-release ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23、3.24${RESET}" >&2; exit 1; }
     . /etc/os-release
     os_id=${ID:-}
     os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
-    [ "${os_id}" = "alpine" ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1; }
+    [ "${os_id}" = "alpine" ] || { echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23、3.24${RESET}" >&2; exit 1; }
     case "${os_version}" in
-        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
-        *) echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23${RESET}" >&2; exit 1 ;;
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*|3.24|3.24.*) ;;
+        *) echo -e "${RED}仅支持 Alpine Linux 3.21、3.22、3.23、3.24${RESET}" >&2; exit 1 ;;
     esac
 }
 

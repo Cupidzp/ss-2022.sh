@@ -55,14 +55,14 @@ readonly SUCCESS="${GREEN}[成功]${PLAIN}"
 
 require_supported_alpine() {
     local os_id os_version
-    [ -f /etc/os-release ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1; }
+    [ -f /etc/os-release ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23、3.24" >&2; exit 1; }
     . /etc/os-release
     os_id=${ID:-}
     os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
-    [ "${os_id}" = "alpine" ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1; }
+    [ "${os_id}" = "alpine" ] || { echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23、3.24" >&2; exit 1; }
     case "${os_version}" in
-        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
-        *) echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23" >&2; exit 1 ;;
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*|3.24|3.24.*) ;;
+        *) echo -e "${ERROR} 仅支持 Alpine Linux 3.21、3.22、3.23、3.24" >&2; exit 1 ;;
     esac
 }
 

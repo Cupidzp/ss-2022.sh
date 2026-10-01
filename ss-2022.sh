@@ -80,23 +80,23 @@ check_root() {
     fi
 }
 
-# 仅支持 Alpine Linux 3.21-3.23
+# 仅支持 Alpine Linux 3.21-3.24
 detect_os() {
     local os_id os_version
     if [[ ! -f /etc/os-release ]]; then
-        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23"
+        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23、3.24"
     fi
 
     . /etc/os-release
     os_id=${ID:-}
     os_version=${VERSION_ID:-$(cat /etc/alpine-release 2>/dev/null)}
     if [[ "${os_id}" != "alpine" ]]; then
-        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23；检测到 ${os_id:-未知系统}"
+        error_exit "仅支持 Alpine Linux 3.21、3.22、3.23、3.24；检测到 ${os_id:-未知系统}"
     fi
 
     case "${os_version}" in
-        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*) ;;
-        *) error_exit "仅支持 Alpine Linux 3.21、3.22、3.23；检测到 ${os_version:-未知版本}" ;;
+        3.21|3.21.*|3.22|3.22.*|3.23|3.23.*|3.24|3.24.*) ;;
+        *) error_exit "仅支持 Alpine Linux 3.21、3.22、3.23、3.24；检测到 ${os_version:-未知版本}" ;;
     esac
 
     OS_TYPE="alpine"
@@ -971,7 +971,7 @@ install_obfs_plugin() {
 
     [[ -z "${OS_TYPE}" ]] && detect_os
 
-    echo -e "${WARNING} Alpine v3.21-v3.23 官方仓库未提供 simple-obfs；如需使用，请先自行安装 obfs-server"
+    echo -e "${WARNING} Alpine v3.21-v3.24 官方仓库未提供 simple-obfs；如需使用，请先自行安装 obfs-server"
     return 1
 }
 
