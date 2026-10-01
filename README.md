@@ -1,12 +1,12 @@
 # Shadowsocks Rust + ShadowTLS Alpine 一键安装
 
-在 **Alpine Linux 3.21、3.22 或 3.23** 上以 root 执行下面这一行。命令会安装启动所需的 Bash 和 curl、下载脚本并启动交互安装器；脚本会继续通过 `apk` 安装运行依赖。
+在 **Alpine Linux 3.21、3.22 或 3.23** 上以 root 执行下面这一行。命令会安装启动所需的 Bash 和 curl、下载脚本并启动交互安装器；脚本会继续通过 `apk` 安装运行依赖，并在安装过程中询问是否自动管理本机防火墙规则。
 
 ```sh
-apk add --no-cache bash curl && SS_SKIP_FIREWALL=1 bash -c 'curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o /tmp/ss-2022.sh && exec bash /tmp/ss-2022.sh'
+apk add --no-cache bash curl && bash -c 'curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o /tmp/ss-2022.sh && exec bash /tmp/ss-2022.sh'
 ```
 
-进入菜单后选择 **1. 安装 Shadowsocks Rust**，端口提示处可直接输入端口号，例如 `30123`。此命令设置 `SS_SKIP_FIREWALL=1`，跳过由脚本自动管理的本机 iptables 规则；请确保网络侧已放行 SS 所用的 TCP 和 UDP 端口。
+进入菜单后选择 **1. 安装 Shadowsocks Rust**，端口提示处可直接输入端口号，例如 `30123`。安装时可选择由脚本自动管理本机 iptables 规则，或跳过并自行确保网络侧放行 SS 使用的 TCP 和 UDP 端口；选择会保存并用于后续 SS/ShadowTLS 管理操作。
 
 ## 系统要求
 
@@ -22,7 +22,7 @@ apk add --no-cache bash curl && SS_SKIP_FIREWALL=1 bash -c 'curl -fsSL https://r
 
 Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的 systemd 项目，不属于此 Alpine 版本的支持范围；菜单会显示提示并返回。Alpine 官方仓库未提供 `simple-obfs`，混淆插件仅在已自行安装 `obfs-server` 时可用。
 
-`SS_SKIP_FIREWALL=1` 设置会写入 `/etc/ss-rust/firewall-disabled` 并在后续 SS/ShadowTLS 管理操作中持续生效；中国大陆 IP 屏蔽是独立的防火墙功能，不受此选项控制。
+如需非交互跳过防火墙管理，可在运行安装器前设置 `SS_SKIP_FIREWALL=1`；设置会写入 `/etc/ss-rust/firewall-disabled` 并在后续 SS/ShadowTLS 管理操作中持续生效。中国大陆 IP 屏蔽是独立的防火墙功能，不受此选项控制。
 
 ## 主要功能
 
