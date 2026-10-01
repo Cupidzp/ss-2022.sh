@@ -8,6 +8,7 @@
 - 大陆 IP 屏蔽使用 Alpine `community` 仓库的 `py3-maxminddb`，不再通过 pip 修改系统 Python 环境。
 - Alpine 官方仓库未提供 `simple-obfs`；不再尝试使用其他发行版的包管理器安装。
 - 新增 `SS_SKIP_FIREWALL=1` 安装选项，适用于由网络侧管理过滤规则的 LXC 容器。
+- 安装期间询问是否自动管理本机 iptables 规则，并持久化用户选择。
 
 ## v4.4（2026-08-25）
 
