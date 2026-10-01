@@ -1,6 +1,6 @@
 # Shadowsocks Rust + ShadowTLS Alpine 一键安装
 
-在 **Alpine Linux 3.21、3.22 或 3.23** 上以 root 执行下面这一行。命令会安装启动所需的 Bash 和 curl、下载脚本并启动交互安装器；脚本会继续通过 `apk` 安装运行依赖，并在安装过程中询问是否自动管理本机防火墙规则。
+在 **Alpine Linux 3.21、3.22、3.23 或 3.24** 上以 root 执行下面这一行。命令会安装启动所需的 Bash 和 curl、下载脚本并启动交互安装器；脚本会继续通过 `apk` 安装运行依赖，并在安装过程中询问是否自动管理本机防火墙规则。
 
 ```sh
 apk add --no-cache bash curl && bash -c 'curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o /tmp/ss-2022.sh && exec bash /tmp/ss-2022.sh'
@@ -10,7 +10,7 @@ apk add --no-cache bash curl && bash -c 'curl -fsSL https://raw.githubuserconten
 
 ## 系统要求
 
-- 仅支持 Alpine Linux 3.21、3.22、3.23（x86_64、aarch64，以及脚本支持的 musl 架构）
+- 仅支持 Alpine Linux 3.21、3.22、3.23、3.24（x86_64、aarch64，以及脚本支持的 musl 架构）
 - 需要 OpenRC；LXC 容器应提供可用的 `rc-service` / `rc-update`
 - 需要 root 权限和可访问 Alpine 软件源、GitHub 的网络连接
 
