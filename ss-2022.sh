@@ -1329,6 +1329,15 @@ b64_url() {
     echo -n "$1" | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='
 }
 
+format_uri_host() {
+    local host=$1
+    if [[ "${host}" == *:* ]]; then
+        echo "[${host}]"
+    else
+        echo "${host}"
+    fi
+}
+
 # 查看配置信息
 View() {
     check_installed_status
@@ -1390,10 +1399,10 @@ View() {
     fi
 
     if [[ "${ipv4}" != "IPv4_Error" ]]; then
-        ss_url_ipv4="ss://${userinfo}@${ipv4}:${config_port}${plugin_param}#SS-${ipv4}"
+        ss_url_ipv4="ss://${userinfo}@$(format_uri_host "${ipv4}"):${config_port}${plugin_param}#SS-${ipv4}"
     fi
     if [[ "${ipv6}" != "IPv6_Error" ]]; then
-        ss_url_ipv6="ss://${userinfo}@${ipv6}:${config_port}${plugin_param}#SS-${ipv6}"
+        ss_url_ipv6="ss://${userinfo}@$(format_uri_host "${ipv6}"):${config_port}${plugin_param}#SS-${ipv6}"
     fi
 
     echo -e "\n${Yellow_font_prefix}=== Shadowsocks 链接 ===${Font_color_suffix}"
