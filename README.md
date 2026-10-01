@@ -1,62 +1,28 @@
-## 食用说明
-### 安装脚本
-*请确保已安装curl/wget* 
+# Shadowsocks Rust + ShadowTLS Alpine 一键安装
 
-**以下脚本根据需要选择**
-+ ss 2022 | snell | shadowtls 多功能管理菜单
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/menu.sh)
-```
-+ ss 2022 安装脚本
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh)
-```
-+ 下载脚本，本地执行
-```bash
-curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o ss-2022.sh && chmod +x ss-2022.sh && bash ./ss-2022.sh
+在 **Alpine Linux 3.21、3.22 或 3.23** 上以 root 执行下面这一行。命令会安装启动所需的 Bash 和 curl、下载脚本并启动交互安装器；脚本会继续通过 `apk` 安装运行依赖。
+
+```sh
+apk add --no-cache bash curl && SS_SKIP_FIREWALL=1 bash -c 'curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o /tmp/ss-2022.sh && exec bash /tmp/ss-2022.sh'
 ```
 
-# Shadowsocks Rust + ShadowTLS 安装管理脚本
-
-这是一个用于安装和管理 Shadowsocks Rust 和 ShadowTLS 的脚本集合。
-
-## 功能特点
-
-- 支持 Shadowsocks Rust 的完整管理
-- 支持 ShadowTLS V3 的安装和配置
-- 自动生成配置信息和分享链接
-- 支持多种加密方式
-- 支持多客户端配置格式
+进入菜单后选择 **1. 安装 Shadowsocks Rust**，端口提示处可直接输入端口号，例如 `30123`。此命令设置 `SS_SKIP_FIREWALL=1`，跳过由脚本自动管理的本机 iptables 规则；请确保网络侧已放行 SS 所用的 TCP 和 UDP 端口。
 
 ## 系统要求
 
 - 仅支持 Alpine Linux 3.21、3.22、3.23（x86_64、aarch64，以及脚本支持的 musl 架构）
 - 需要 OpenRC；LXC 容器应提供可用的 `rc-service` / `rc-update`
-- 需要 root 权限
-- 首次运行前需要 Bash 和 curl
+- 需要 root 权限和可访问 Alpine 软件源、GitHub 的网络连接
 
-### Alpine Linux
-
-Alpine 默认使用 BusyBox ash，脚本需要 Bash。首次使用先安装启动所需工具，再下载并用 Bash 运行：
-
-```sh
-apk add bash curl
-curl -fsSL https://raw.githubusercontent.com/Cupidzp/ss-2022.sh/main/ss-2022.sh -o ss-2022.sh
-chmod +x ss-2022.sh
-bash ./ss-2022.sh
-```
+## Alpine 注意事项
 
 服务由 OpenRC 管理，可使用 `rc-service ss-rust status|start|stop|restart` 查看和控制，使用 `rc-update` 查看开机自启。多端口 SS、ShadowTLS 和大陆屏蔽恢复也使用 OpenRC 服务。
 
-脚本会通过 `apk` 安装运行依赖。二维码和大陆 IP 屏蔽功能需要启用 Alpine `community` 仓库；对应包为 `libqrencode-tools` 和 `py3-maxminddb`。
+二维码和大陆 IP 屏蔽功能需要启用 Alpine `community` 仓库；对应包为 `libqrencode-tools` 和 `py3-maxminddb`。
 
 Snell、PSM 流量管理和 VLESS Reality 依赖仓库外的 systemd 项目，不属于此 Alpine 版本的支持范围；菜单会显示提示并返回。Alpine 官方仓库未提供 `simple-obfs`，混淆插件仅在已自行安装 `obfs-server` 时可用。
 
-若网络侧已负责过滤端口且不需要容器内 iptables 规则，安装前设置 `SS_SKIP_FIREWALL=1`。该设置会写入 `/etc/ss-rust/firewall-disabled` 并在后续 SS/ShadowTLS 管理操作中持续生效；中国大陆 IP 屏蔽是独立的防火墙功能，不受此选项控制。
-
-```sh
-SS_SKIP_FIREWALL=1 bash ./ss-2022.sh
-```
+`SS_SKIP_FIREWALL=1` 设置会写入 `/etc/ss-rust/firewall-disabled` 并在后续 SS/ShadowTLS 管理操作中持续生效；中国大陆 IP 屏蔽是独立的防火墙功能，不受此选项控制。
 
 ## 主要功能
 
@@ -73,7 +39,7 @@ SS_SKIP_FIREWALL=1 bash ./ss-2022.sh
 ### ShadowTLS 功能
 1. 安装 ShadowTLS
 2. 卸载 ShadowTLS
-3. 查看配置信息
+3. 查看配置
 
 ## 支持的加密方式
 
