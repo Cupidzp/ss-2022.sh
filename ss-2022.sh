@@ -161,6 +161,54 @@ firewall_is_disabled() {
     [[ "${SS_SKIP_FIREWALL:-0}" == "1" || -f "${FIREWALL_SKIP_FILE}" ]]
 }
 
+configure_firewall_preference() {
+    local choice
+
+    if [[ "${SS_SKIP_FIREWALL:-}" == "1" ]]; then
+        mkdir -p "${INSTALL_DIR}"
+        : > "${FIREWALL_SKIP_FILE}"
+        echo -e "${INFO} 已按 SS_SKIP_FIREWALL 设置跳过本机 iptables 规则管理"
+        return 0
+    fi
+
+    if [[ "${SS_SKIP_FIREWALL:-}" == "0" ]]; then
+        rm -f "${FIREWALL_SKIP_FILE}"
+        echo -e "${INFO} 已按 SS_SKIP_FIREWALL 设置启用本机 iptables 规则管理"
+        return 0
+    fi
+
+    if [[ -f "${FIREWALL_SKIP_FILE}" ]]; then
+        echo -e "${INFO} 检测到已保存的设置：跳过本机 iptables 规则管理"
+        return 0
+    fi
+
+    echo -e "请选择本机防火墙规则处理方式："
+    echo -e "脚本只会在本机 iptables 中放行 SS 端口，不会配置云平台安全组。"
+    echo -e " ${Green_font_prefix}1.${Font_color_suffix} 是，自动管理 ${Green_font_prefix}(默认)${Font_color_suffix}"
+    echo -e " ${Green_font_prefix}2.${Font_color_suffix} 否，不修改本机防火墙"
+    while true; do
+        read -r -p "请选择 [1-2]：" choice
+        [[ -z "${choice}" ]] && choice="1"
+        case "${choice}" in
+            1)
+                rm -f "${FIREWALL_SKIP_FILE}"
+                echo -e "${INFO} 将由脚本管理本机 iptables 端口放行规则"
+                return 0
+                ;;
+            2)
+                mkdir -p "${INSTALL_DIR}"
+                : > "${FIREWALL_SKIP_FILE}"
+                echo -e "${INFO} 已保存设置：跳过本机 iptables 规则管理"
+                echo -e "${WARNING} 请确保网络侧已放行 SS 使用的 TCP 和 UDP 端口"
+                return 0
+                ;;
+            *)
+                echo -e "${ERROR} 请输入 1 或 2"
+                ;;
+        esac
+    done
+}
+
 install_openrc_service() {
     local service_name=$1 command_path=$2 command_args=$3 log_file=$4 description=$5
     local service_file="/etc/init.d/${service_name}"
@@ -1067,14 +1115,10 @@ Install() {
     
     echo -e "${Info} 检测系统信息..."
     detect_os
-    if [[ "${SS_SKIP_FIREWALL:-0}" == "1" ]]; then
-        mkdir -p "${INSTALL_DIR}"
-        : > "${FIREWALL_SKIP_FILE}"
-        echo -e "${WARNING} 已保存 SS_SKIP_FIREWALL 设置，本机 iptables 规则不会由脚本管理"
-    fi
 
     echo -e "${Info} 开始安装/配置依赖..."
     install_dependencies
+    configure_firewall_preference
     
     echo -e "${Info} 开始设置配置..."
     set_port
