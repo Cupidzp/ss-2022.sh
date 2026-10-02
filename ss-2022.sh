@@ -1479,10 +1479,35 @@ View() {
 
 # 查看运行状态
 Status() {
-    echo -e "${Info} 获取 Shadowsocks Rust 活动日志 ……"
-    echo -e "${Tip} 返回主菜单请按 q ！"
-    service_show_status ss-rust
-    Start_Menu
+    check_installed_status || return 1
+
+    local config_port config_method listeners
+    config_port=$(jq -r '.server_port // empty' "${CONFIG_PATH}" 2>/dev/null)
+    config_method=$(jq -r '.method // empty' "${CONFIG_PATH}" 2>/dev/null)
+
+    echo -e "\n${Green_font_prefix}=== Shadowsocks Rust 运行状态 ===${Font_color_suffix}"
+    if service_active ss-rust; then
+        echo -e "服务状态：${Green_font_prefix}运行中${Font_color_suffix}"
+    else
+        echo -e "服务状态：${Red_font_prefix}未运行${Font_color_suffix}"
+    fi
+    [[ -n "${config_port}" ]] && echo -e "服务端口：${config_port} (TCP/UDP)"
+    [[ -n "${config_method}" ]] && echo -e "加密方式：${config_method}"
+
+    if [[ -n "${config_port}" ]] && command -v ss >/dev/null 2>&1; then
+        listeners=$(ss -lntup 2>/dev/null | awk -v port="${config_port}" 'NR == 1 || $5 ~ "[:.]" port "([^0-9]|$)"')
+        if [[ -n "${listeners}" ]]; then
+            echo -e "\n${Green_font_prefix}监听情况：${Font_color_suffix}"
+            echo "${listeners}"
+        else
+            echo -e "${WARNING} 未找到端口 ${config_port} 的监听 socket"
+        fi
+    fi
+
+    echo -e "\n${Green_font_prefix}最近服务日志：${Font_color_suffix}"
+    service_show_logs ss-rust
+    echo
+    read -r -p "按回车返回主菜单..." _
 }
 
 # 更新脚本
